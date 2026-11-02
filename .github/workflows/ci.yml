@@ -1,0 +1,23 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Syntax check (JS)
+        run: |
+          for f in app.js dev-server.js map-core.js map-screen.js guide.js guide-data.js; do
+            [ -f "$f" ] && node --check "$f"
+          done
+      - name: Syntax check (PHP proxy)
+        run: php -l api.php
+      - name: Unit tests
+        run: node --test test/

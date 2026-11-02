@@ -1,0 +1,12 @@
+{
+  "name": "m2-web",
+  "version": "0.2.0",
+  "private": true,
+  "description": "M² — MeshCore Live Monitor (web)",
+  "scripts": {
+    "start": "node dev-server.js",
+    "test": "node --test test/",
+    "check": "node --check app.js && node --check map-core.js && node --check map-screen.js && node --check guide.js && node --check guide-data.js"
+  },
+  "engines": { "node": ">=20" }
+}

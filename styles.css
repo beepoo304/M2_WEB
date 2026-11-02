@@ -233,3 +233,16 @@ button { color: inherit; font: inherit; }
 @media (max-width:480px) { .topbar { min-height:68px; } .brand-logo { width:40px;height:40px; } .brand-name { font-size:15px; } .brand-name span { font-size:12px; } .brand-caption { font-size:8px; } .top-actions { gap:5px; } .connection-pill { padding:7px 8px; gap:6px; font-size:9px; } .active-api-source { max-width:96px; font-size:8px; } .refresh-control { gap:3px; padding-left:7px; font-size:9px; } .refresh-control button { width:29px;height:29px; } .nav-item { font-size:9px; gap:3px; } .nav-icon { width:20px;height:20px; } }
 @media (max-width:600px) { .screen { padding-top:24px; } .live-heading { align-items:flex-start; } .refresh-button { padding:10px 12px; } .live-meta { gap:9px; flex-wrap:wrap; padding:9px 3px; font-size:9px; } .live-auto { margin-left:auto; } .packet-row { grid-template-columns:58px 1fr auto; gap:9px; min-height:72px; padding:10px; } .packet-type { grid-column:2; grid-row:1; } .packet-time { grid-column:1; grid-row:1; font-size:9px; } .packet-copy { grid-column:1/3; grid-row:2; padding-left:0; } .packet-route { grid-column:3; grid-row:1/3; font-size:9px; } .packet-copy strong { font-size:12px; } .packet-copy span { font-size:11px; } .packet-detail { padding:22px 17px; } .packet-detail dl { grid-template-columns:1fr; } .node-info-backdrop { padding:12px; } .node-info-dialog { max-height:calc(100vh - 24px); padding:22px 16px; } .node-info-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .neighbour-list>div { grid-template-columns:52px minmax(0,1fr); } .neighbour-list>div span { grid-column:2; } }
 @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation-duration:.01ms!important; transition-duration:.01ms!important; } }
+
+/* Guide */
+.sr-only { position:absolute; width:1px; height:1px; margin:-1px; padding:0; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.guide-screen { display:grid; gap:12px; padding-bottom:12px; }
+.guide-head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.guide-head h1 { margin:6px 0; font-size:clamp(26px,4vw,38px); letter-spacing:-.03em; }
+.guide-lang select { border:1px solid var(--outline); border-radius:9px; padding:8px 10px; background:var(--surface-variant); color:var(--primary); font:600 13px "Segoe UI",system-ui,sans-serif; }
+.guide-section { display:grid; gap:10px; border:1px solid var(--outline); border-radius:12px; padding:12px 14px; background:var(--surface); }
+.guide-section h2 { margin:0; font-size:12px; letter-spacing:.08em; }
+.guide-label { font-size:12px; font-weight:650; }
+.guide-desc, .guide-note { margin:0; font-size:12px; line-height:1.5; color:var(--on-surface); }
+.guide-link { color:#2196f3; font-size:13px; text-decoration:none; padding:6px 0; }
+.guide-link:hover { text-decoration:underline; }

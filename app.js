@@ -1,6 +1,6 @@
 const tabButtons = [...document.querySelectorAll('.nav-item')];
 const screen = document.getElementById('screen');
-const liveState = { packets: [], loading: false, error: '', lastSuccess: 0, selected: null, details: null, detailsLoading: false, detailsError: '' };
+const liveState = { packets: [], loading: false, error: '', lastSuccess: 0, selected: null, details: null, detailsLoading: false, detailsError: '', selectedChannel: '', showAllRoutes: false };
 // Mirrors M²'s observation-match cache: a packet is rechecked only if its
 // observation count changed or its cached route analysis is older than 30 s.
 const observationMatchCache = new Map();
@@ -141,8 +141,10 @@ function relationMatches(packet) {
 function matchesForPacket(packet) { return relationMatches(packet).filter(match=>match.relation!=='DESTINATION'); }
 function mergeMatches(...lists) {
   const result=[];
-  lists.flat().forEach(match=>{
-    if(match && match.relation !== 'DESTINATION' && !result.some(item=>item.relation===match.relation && item.key.toLowerCase()===match.key.toLowerCase())) result.push(match);
+  // flat(2): routeMatches to tablica tablic — jeden poziom nie wystarcza,
+  // bo pusta trasa ([]) trafiłaby do wyniku jako „match" bez klucza.
+  lists.flat(2).forEach(match=>{
+    if(match && !Array.isArray(match) && match.relation !== 'DESTINATION' && !result.some(item=>item.relation===match.relation && item.key.toLowerCase()===match.key.toLowerCase())) result.push(match);
   });
   return result;
 }
@@ -223,8 +225,154 @@ function loadTrackedKeys() {
 function saveTrackedKeys() { sessionStorage.setItem(KEY_STORAGE,JSON.stringify(trackedKeys)); }
 function loadMyLogPackets() { try { const value=JSON.parse(sessionStorage.getItem(MY_LOG_STORAGE)||'[]'); return Array.isArray(value)?value.slice(0,250):[]; } catch { return []; } }
 function saveMyLogPackets() { sessionStorage.setItem(MY_LOG_STORAGE,JSON.stringify(myLogPackets.slice(0,250))); }
-function loadChannels() { try { const value=JSON.parse(sessionStorage.getItem(CHANNEL_STORAGE)||'[]'); return Array.isArray(value)?value.filter(item=>typeof item?.name==='string').slice(0,50):[]; } catch { return []; } }
-function saveChannels() { sessionStorage.setItem(CHANNEL_STORAGE,JSON.stringify(savedChannels.slice(0,50))); }
+// Kanały są trwałe (localStorage) jak w M² Android; stary format sesyjny jest migrowany.
+function migrateChannel(value) {
+  return {
+    name:String(value?.name||'').trim(),
+    hash:String(value?.hash||''),
+    secret:String(value?.secret||''),
+    isPrivate:!!value?.isPrivate,
+    lastReadAt:Number(value?.lastReadAt)||0,
+    clearedAt:Number(value?.clearedAt)||0,
+    messages:Array.isArray(value?.messages)?value?.messages.filter(Boolean).slice(0,250):[],
+    loading:false, error:''
+  };
+}
+function loadChannels() {
+  try {
+    const value=JSON.parse(localStorage.getItem(CHANNEL_STORAGE)||'null');
+    if(Array.isArray(value)) return value.filter(item=>typeof item?.name==='string').slice(0,50).map(migrateChannel);
+  } catch {}
+  try {
+    const legacy=JSON.parse(sessionStorage.getItem(CHANNEL_STORAGE)||'[]');
+    if(Array.isArray(legacy)&&legacy.length){ sessionStorage.removeItem(CHANNEL_STORAGE); return legacy.filter(item=>typeof item?.name==='string').slice(0,50).map(migrateChannel); }
+  } catch {}
+  return [];
+}
+function saveChannels() { try { localStorage.setItem(CHANNEL_STORAGE,JSON.stringify(savedChannels.slice(0,50))); } catch {} }
+
+/** Deszyfracja wiadomości prywatnych kanałów z bieżącego strumienia pakietów (payload_type 5). */
+async function channelsDecryptLive(packets) {
+  const keyed=savedChannels.filter(channel=>channel.secret);
+  if(!keyed.length)return;
+  let changed=false;
+  for(const packet of (Array.isArray(packets)?packets:[])) {
+    if(Number(packet.payload_type)!==5)continue;
+    const decoded=parseDecoded(packet);
+    const channelHashHex=String(decoded.channelHashHex||'');
+    const encrypted=String(decoded.encryptedData||''), mac=String(decoded.mac||'');
+    if(!channelHashHex||!encrypted||!mac)continue;
+    for(const channel of keyed) {
+      if(String(channel.hash).toLowerCase()!==channelHashHex.toLowerCase())continue;
+      if(!(await M2Channels.validMac(channel.secret,mac,encrypted)))continue;
+      const message=await M2Channels.decryptMessage(channel.secret,encrypted);
+      if(!message)continue;
+      const incoming={ id:String(packet.id), sender:message.sender, text:message.text, timestamp:message.timestamp,
+        hops:packetPath(packet).length, observers:[packet.observer_name].filter(Boolean),
+        repeats:Number(packet.observation_count||1), snr:packet.snr??null, packetHash:packet.hash||'' };
+      const merged=M2Channels.mergeMessages(channel.messages,[incoming],channel.clearedAt);
+      if(merged.length!==channel.messages.length||merged[0]?.id!==channel.messages[0]?.id){ channel.messages=merged; changed=true; }
+    }
+  }
+  if(changed){ saveChannels(); channelStatsRefresh(); if(currentScreen()==='Channels')renderChannels(); }
+}
+
+/** Wiadomości kanału bez sekretu (public / #nazwa) — pobierane z API jak w Androidzie. */
+async function channelsLoadRemote(channel) {
+  if(channel.isPrivate||channel.loading)return;
+  channel.loading=true; if(currentScreen()==='Channels')renderChannels();
+  try {
+    const response=await fetch(apiProxyUrl('channel',{name:channel.name}),{cache:'no-store'});
+    const data=await response.json();
+    if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);
+    const fresh=(Array.isArray(data.messages)?data.messages:[]).map((message,index)=>({
+      id:String(message.packetId||message.id||`${channel.name}-${index}`),
+      sender:String(message.sender||'').trim()||'Anonymous', text:String(message.text||''),
+      timestamp:String(message.timestamp||''), hops:Number(message.hops||0),
+      observers:Array.isArray(message.observers)?message.observers.filter(Boolean):[],
+      repeats:Number(message.repeats||1), snr:message.snr??null, packetHash:String(message.packetHash||'')
+    }));
+    channel.messages=M2Channels.mergeMessages(channel.messages,fresh,channel.clearedAt);
+    channel.error='';
+  } catch(error) { channel.error=error.message||'Could not load channel messages'; }
+  finally { channel.loading=false; saveChannels(); if(currentScreen()==='Channels')renderChannels(); }
+}
+
+function trackedNamesLower() { return [...new Set(trackedKeys.map(item=>String(item.name||'').trim().toLowerCase()).filter(Boolean))]; }
+function messageIsTracked(message) {
+  const names=trackedNamesLower(), sender=String(message.sender||'').trim().toLowerCase();
+  if(names.some(name=>sender===name||sender.startsWith(`${name} `)))return true;
+  return mentionedTrackedKeys(message.text).length>0;
+}
+function messageEpochOf(message) { const value=Date.parse(message.timestamp); return Number.isFinite(value)?value:0; }
+function warsawDateTime(value) {
+  const date=new Date(value);
+  return Number.isNaN(date.getTime())?'—':new Intl.DateTimeFormat('pl-PL',{timeZone:'Europe/Warsaw',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(date);
+}
+
+// ---------- Statystyki kanałów (port ChannelStatisticsEngine, okno 24 h) ----------
+const CHANNEL_STATS_STORAGE='m2-web-channel-stats-v1';
+const DAY_MS=24*60*60*1000;
+function loadChannelStats() { try { const value=JSON.parse(localStorage.getItem(CHANNEL_STATS_STORAGE)||'[]'); return Array.isArray(value)?value:[]; } catch { return []; } }
+function saveChannelStats(events) { try { localStorage.setItem(CHANNEL_STATS_STORAGE,JSON.stringify(events)); } catch {} }
+function channelStatsRefresh() {
+  const cutoff=Date.now()-DAY_MS;
+  const fresh=[];
+  savedChannels.forEach(channel=>(channel.messages||[]).forEach(message=>{
+    if(messageEpochOf(message)<cutoff)return;
+    trackedKeys.forEach(item=>{
+      const name=String(item.name||'').trim().toLowerCase();
+      if(!name)return;
+      const sender=String(message.sender||'').trim();
+      const sent=sender.toLowerCase()===name||sender.toLowerCase().startsWith(`${name} `);
+      const mention=mentionedTrackedKeys(message.text).some(match=>match.key.toLowerCase()===item.key.toLowerCase());
+      if(sent||mention)fresh.push({ id:String(message.id), channel:channel.name, key:item.key, timestamp:message.timestamp, sent, mention });
+    });
+  }));
+  const activeKeys=trackedKeys.map(item=>item.key.toLowerCase());
+  const events=[...fresh,...loadChannelStats()]
+    .filter(event=>messageEpochOf(event)>=cutoff&&activeKeys.includes(String(event.key||'').toLowerCase()))
+    .filter((event,index,all)=>all.findIndex(other=>other.key.toLowerCase()===event.key.toLowerCase()&&other.channel.toLowerCase()===event.channel.toLowerCase()&&other.id===event.id)===index)
+    .sort((a,b)=>messageEpochOf(b)-messageEpochOf(a));
+  saveChannelStats(events);
+  return events;
+}
+function channelStatsReset(key) { saveChannelStats(loadChannelStats().filter(event=>String(event.key).toLowerCase()!==String(key).toLowerCase())); }
+
+// ---------- Statystyki pakietów aplikacji (port AppPacketStatisticsEngine) ----------
+const APP_STATS_STORAGE='m2-web-app-stats-v1';
+function loadAppStats() {
+  try {
+    const value=JSON.parse(localStorage.getItem(APP_STATS_STORAGE)||'null');
+    if(value&&Number.isFinite(Number(value.startedAtMs)))return { startedAtMs:Number(value.startedAtMs), packetCount:Math.max(0,Number(value.packetCount)||0), accumulatedRunningMs:Math.max(0,Number(value.accumulatedRunningMs)||0), brokerRunningMs:{}, seen:[] , ...(value.brokerRunningMs?{brokerRunningMs:value.brokerRunningMs}:{}) };
+  } catch {}
+  return { startedAtMs:Date.now(), packetCount:0, accumulatedRunningMs:0, brokerRunningMs:{}, seen:[] };
+}
+let appStats=loadAppStats();
+let appStatsBroker=sourceLabel(activeApiSource), appStatsBrokerStart=Date.now();
+function saveAppStats() { try { localStorage.setItem(APP_STATS_STORAGE,JSON.stringify({ ...appStats, seen:appStats.seen.slice(-2000) })); } catch {} }
+function appStatsAccept(packets) {
+  let added=0;
+  (Array.isArray(packets)?packets:[]).forEach(packet=>{
+    const identity=String(packet.hash||'').trim().toLowerCase()||`raw#${Number(packet.payload_type)||0}#${packet.timestamp||''}#${String(packet.raw_hex||'').trim().toLowerCase()}`;
+    if(!appStats.seen.includes(identity)){ appStats.seen.push(identity); added++; }
+  });
+  if(appStats.seen.length>2000)appStats.seen.splice(0,appStats.seen.length-2000);
+  if(added){ appStats.packetCount+=added; saveAppStats(); }
+}
+function appStatsSwitchBroker() {
+  const host=sourceLabel(activeApiSource), now=Date.now();
+  if(host===appStatsBroker)return;
+  appStats.brokerRunningMs[appStatsBroker]=(appStats.brokerRunningMs[appStatsBroker]||0)+(now-appStatsBrokerStart);
+  appStatsBroker=host; appStatsBrokerStart=now; saveAppStats();
+}
+setInterval(()=>{ if(document.hidden||appClosed)return; const now=Date.now(); appStats.accumulatedRunningMs+=30000; appStats.brokerRunningMs[appStatsBroker]=(appStats.brokerRunningMs[appStatsBroker]||0)+(now-appStatsBrokerStart); appStatsBrokerStart=now; saveAppStats(); },30000);
+addEventListener('pagehide',()=>{ const now=Date.now(); appStats.brokerRunningMs[appStatsBroker]=(appStats.brokerRunningMs[appStatsBroker]||0)+(now-appStatsBrokerStart); appStatsBrokerStart=now; saveAppStats(); });
+function formatRunningTime(milliseconds) {
+  const totalMinutes=Math.max(0,Number(milliseconds)||0)/60000, days=Math.floor(totalMinutes/1440), hours=Math.floor(totalMinutes/60)%24, minutes=Math.floor(totalMinutes)%60;
+  return `${days>0?`${days} d `:''}${hours} h ${minutes} min`;
+}
+function appStatsReset() { appStats={ startedAtMs:Date.now(), packetCount:0, accumulatedRunningMs:0, brokerRunningMs:{}, seen:liveState.packets.map(packet=>String(packet.hash||'').trim().toLowerCase()).filter(Boolean) }; appStatsBroker=sourceLabel(activeApiSource); appStatsBrokerStart=Date.now(); saveAppStats(); }
 function updateMyLog(packets) {
   const related=(Array.isArray(packets)?packets:[]).filter(packet=>enhancedMatches(packet).length>0);
   if(!related.length)return;
@@ -297,13 +445,45 @@ function nodeInfoDate(value) {
 }
 function metric(value, digits=2) { const number=Number(value); return Number.isFinite(number) ? number.toFixed(digits) : '—'; }
 function closeNodeInfo() { document.querySelector('.node-info-backdrop')?.remove(); }
+function rptMetricHelp(key) {
+  return {
+    role:{pl:'Rola tego węzła w sieci MeshCore: repeater przekazuje dalej pakiety, companion to zwykłe urządzenie mobilne, sensor raportuje dane, a room server utrzymuje kanał.',en:'The role of this node in the MeshCore network: repeater relays packets, companion is a regular mobile device, sensor reports data, room server hosts a channel.'},
+    lastHeard:{pl:'Czas od ostatniego pakietu wysłanego przez ten węzeł, który był widoczny dla co najmniej jednego listenera.',en:'Time since the last packet sent by this node was seen by at least one listener.'},
+    usefulness:{pl:'Punktowy wskaźnik jakości tego węzła, scalający ruch, tłumienie, redundancję i zasięg.',en:'A point score for this node, combining traffic, attenuation, redundancy and coverage.'},
+    traffic:{pl:'Każdy słuchacz widzi część sieci; udział w ruchu to procent widzianych pakietów.',en:'Each listener sees part of the network; traffic share is the percentage of packets seen.'},
+    bridge:{pl:'Połączenie między różnymi sub-mesh — węzeł z wysokim wynikiem utrzymuje połączenie między obszarami z słabym zasięgiem.',en:'Linking different sub-mesh — a high-scoring node keeps distant areas connected.'},
+    coverage:{pl:'Jak dobry jest odbiór dla obszaru geograficznego obsługiwanego przez ten węzeł.',en:'How good the reception is for the geographic area served by this node.'},
+    redundancy:{pl:'Węzeł pośredniczący — jeśli inne węzły z wysokim wynikiem zanikną, ten przejmie świadczenie usług w zasięgu.',en:'A middle node — if other high-scoring nodes disappear, this node takes over service in range.'},
+    firstSeen:{pl:'Kiedy ten węzeł był widziany po raz pierwszy w API.',en:'When this node was first seen in the API.'},
+    totalPackets:{pl:'Każdy słuchacz widzi część sieci; total packets to suma pakietów widzianych przez nasze API.',en:'Each listener sees part of the network; total packets is the sum seen by our API.'},
+    packetsToday:{pl:'Każdy słuchacz widzi część sieci; pakiety dziś to suma widzianych dziś pakietów.',en:'Each listener sees part of the network; packets today is the sum seen today.'},
+    avgSnr:{pl:'Średnia moc sygnału nadawania przez ten węzeł; niższe dBm to silniejszy sygnał.',en:'The average power used by this node to transmit; lower dBm is stronger.'},
+    avgHops:{pl:'Średnia liczba węzłów pośredniczących potrzebna, żeby dostarczyć pakiet do tego węzła.',en:'The average number of middle nodes needed to deliver a packet to this node.'}
+  }[key]||null;
+}
+function renderRptHelp(key) {
+  if(!rptMetricHelp(key))return '';
+  return `<button type="button" class="metric-help" data-rpt-help="${escapeHtml(key)}" aria-label="About ${escapeHtml(key)}">ⓘ</button>`;
+}
+function openRptHelp(key) {
+  const help=rptMetricHelp(key);
+  if(!help)return;
+  const language=/^pl/i.test(navigator.language||'')?'pl':'en';
+  document.body.insertAdjacentHTML('beforeend',`<div class="dialog-backdrop rpt-help-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-label="About ${escapeHtml(key)}"><h3>${escapeHtml(key)}</h3><p class="dialog-note">${escapeHtml(help[language])}</p><div class="dialog-actions"><button type="button" class="dialog-cancel" id="rpt-help-close">Close</button></div></section></div>`);
+  document.getElementById('rpt-help-close')?.addEventListener('click',()=>{document.querySelector('.rpt-help-backdrop')?.remove();});
+  document.querySelector('.rpt-help-backdrop')?.addEventListener('click',event=>{if(event.target===event.currentTarget)event.currentTarget.remove();});
+}
 function showNodeInfo(item, data, loading=false, error='') {
   closeNodeInfo();
   const node=data?.node||{},stats=data?.stats||{},neighbours=Array.isArray(data?.neighbours)?data.neighbours:[];
-  const body=loading ? '<p class="details-loading">Loading RPT information and recorded neighbours…</p>' : error ? `<p class="details-error">${escapeHtml(error)}</p>` : `<section class="node-info-grid"><div><span>ROLE</span><b>${escapeHtml(node.role||'—')}</b></div><div><span>LAST HEARD</span><b>${escapeHtml(nodeInfoDate(node.last_heard||node.last_seen))}</b></div><div><span>USEFULNESS</span><b>${escapeHtml(metric(node.usefulness_score))}${node.usefulness_grade?` · ${escapeHtml(node.usefulness_grade)}`:''}</b></div><div><span>TRAFFIC SHARE</span><b>${escapeHtml(metric(node.traffic_share_score))}</b></div><div><span>BRIDGE SCORE</span><b>${escapeHtml(metric(node.bridge_score))}</b></div><div><span>COVERAGE</span><b>${escapeHtml(metric(node.coverage_score))}</b></div><div><span>REDUNDANCY</span><b>${escapeHtml(metric(node.redundancy_score))}</b></div><div><span>FIRST SEEN</span><b>${escapeHtml(nodeInfoDate(node.first_seen))}</b></div><div><span>TOTAL PACKETS</span><b>${Number(stats.totalPackets||0).toLocaleString('en-US')}</b></div><div><span>PACKETS TODAY</span><b>${Number(stats.packetsToday||0).toLocaleString('en-US')}</b></div><div><span>AVG. SNR</span><b>${stats.avgSnr==null?'—':`${metric(stats.avgSnr,1)} dB`}</b></div><div><span>AVG. HOPS</span><b>${stats.avgHops==null?'—':metric(stats.avgHops,1)}</b></div></section><section class="neighbour-list"><h3>RECORDED NEIGHBOURS · ${neighbours.length}</h3>${neighbours.length?neighbours.map(neighbour=>`<div><code>${escapeHtml(neighbour.hash)}</code><b>${escapeHtml(neighbour.name)}</b><span>${Number(neighbour.count||0)} routes</span></div>`).join(''):'<p>No reliable neighbour route was found.</p>'}</section>`;
+  const heardMs=Date.parse(node.last_heard||node.last_seen||'');
+  const active=Number.isFinite(heardMs)&&Date.now()-heardMs<3600000;
+  const statusText=loading?'…':error?'':active?'ACTIVE':'INACTIVE';
+  const body=loading ? '<p class="details-loading">Loading RPT information and recorded neighbours…</p>' : error ? `<p class="details-error">${escapeHtml(error)}</p>` : `<section class="node-info-grid"><div class="${active?'status-active':''}"><span>STATUS${renderRptHelp('role')}</span><b>${statusText}</b></div><div><span>ROLE</span><b>${escapeHtml(node.role||'—')}</b></div><div><span>LAST HEARD${renderRptHelp('lastHeard')}</span><b>${escapeHtml(nodeInfoDate(node.last_heard||node.last_seen))}</b></div><div><span>USEFULNESS${renderRptHelp('usefulness')}</span><b>${escapeHtml(metric(node.usefulness_score))}${node.usefulness_grade?` · ${escapeHtml(node.usefulness_grade)}`:''}</b></div><div><span>TRAFFIC SHARE${renderRptHelp('traffic')}</span><b>${escapeHtml(metric(node.traffic_share_score))}</b></div><div><span>BRIDGE SCORE${renderRptHelp('bridge')}</span><b>${escapeHtml(metric(node.bridge_score))}</b></div><div><span>COVERAGE${renderRptHelp('coverage')}</span><b>${escapeHtml(metric(node.coverage_score))}</b></div><div><span>REDUNDANCY${renderRptHelp('redundancy')}</span><b>${escapeHtml(metric(node.redundancy_score))}</b></div><div><span>FIRST SEEN${renderRptHelp('firstSeen')}</span><b>${escapeHtml(nodeInfoDate(node.first_seen))}</b></div><div><span>TOTAL PACKETS${renderRptHelp('totalPackets')}</span><b>${Number(stats.totalPackets||0).toLocaleString('en-US')}</b></div><div><span>PACKETS TODAY${renderRptHelp('packetsToday')}</span><b>${Number(stats.packetsToday||0).toLocaleString('en-US')}</b></div><div><span>AVG. SNR${renderRptHelp('avgSnr')}</span><b>${stats.avgSnr==null?'—':`${metric(stats.avgSnr,1)} dB`}</b></div><div><span>AVG. HOPS${renderRptHelp('avgHops')}</span><b>${stats.avgHops==null?'—':metric(stats.avgHops,1)}</b></div></section><section class="neighbour-list"><h3>RECORDED NEIGHBOURS · ${neighbours.length}</h3>${neighbours.length?neighbours.map(neighbour=>`<div><code>${escapeHtml(neighbour.hash)}</code><b>${escapeHtml(neighbour.name)}</b><span>${Number(neighbour.count||0)} routes</span></div>`).join(''):'<p>No reliable neighbour route was found.</p>'}</section>`;
   document.body.insertAdjacentHTML('beforeend',`<div class="node-info-backdrop"><section class="node-info-dialog" role="dialog" aria-modal="true" aria-label="RPT information"><button class="detail-close node-info-close" aria-label="Close RPT information"><span aria-hidden="true">×</span><b>Close</b></button><div class="eyebrow">RPT INFO · ${escapeHtml(sourceLabel(activeApiSource))}</div><h2>${escapeHtml(node.name||item.name||'Tracked device')}</h2><p class="node-info-key">${escapeHtml(item.key)}</p>${body}</section></div>`);
   document.querySelector('.node-info-close')?.addEventListener('click',closeNodeInfo);
   document.querySelector('.node-info-backdrop')?.addEventListener('click',event=>{if(event.target===event.currentTarget)closeNodeInfo();});
+  document.querySelectorAll('[data-rpt-help]').forEach(button=>button.addEventListener('click',()=>openRptHelp(button.dataset.rptHelp)));
 }
 async function openNodeInfo(item) {
   const cached=nodeInfoCache.get(item.key);
@@ -444,22 +624,25 @@ async function enrichPacketObservations(packets, source) {
   // exactly once, just like a direct source/observer match.
   recordTrackedPacketCounters(packets);
   updateMyLog(packets);
+  mapIngest();
   if(source===activeApiSource && currentScreen()==='Live' && !liveState.selected) renderLive();
 }
 async function loadPackets(manual = false) {
-  if (liveState.loading || document.hidden) return;
+  if (liveState.loading || document.hidden || appClosed) return;
   const previousIds=liveState.packets.map(item=>item.id).join(','), previousError=liveState.error;
   liveState.loading = true; if(manual) renderLive();
   try {
     let lastError=null, result=null;
     for(const source of apiSources){
+      const startedAt=Date.now();
       try {
         const response=await fetch(apiProxyUrl('packets',{limit:'250'},source),{cache:'no-store'});
         if(!response.ok)throw new Error(`HTTP ${response.status}`);
         const data=await response.json();
         if(!Array.isArray(data.packets))throw new Error('Invalid packet-feed response');
+        recordApiHealth(source,true,Date.now()-startedAt);
         result={source,packets:data.packets};break;
-      } catch(error) { lastError=error; }
+      } catch(error) { lastError=error; recordApiHealth(source,false,Date.now()-startedAt); }
     }
     if(!result)throw new Error(`All configured APIs are unavailable${lastError?.message?`: ${lastError.message}`:''}`);
     activeApiSource=result.source;
@@ -467,6 +650,11 @@ async function loadPackets(manual = false) {
     liveState.packets = result.packets.sort((a,b)=>new Date(b.timestamp||b.first_seen)-new Date(a.timestamp||a.first_seen));
     recordTrackedPacketCounters(liveState.packets);
     updateMyLog(liveState.packets);
+    mapIngest();
+    appStatsAccept(liveState.packets);
+    appStatsSwitchBroker();
+    channelsDecryptLive(liveState.packets);
+    channelStatsRefresh();
     liveState.error = ''; liveState.lastSuccess = Date.now();
   } catch (error) { liveState.error = error.message || 'Connection failed'; }
   finally {
@@ -498,8 +686,39 @@ function updateLiveIndicators() {
   if(updated)updated.textContent=`Updated ${new Intl.DateTimeFormat('pl-PL',{timeZone:'Europe/Warsaw',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(liveState.lastSuccess)}`;
   document.querySelectorAll('.packet-row').forEach(row=>{const packet=liveState.packets.find(item=>String(item.id)===row.dataset.packetId);const age=row.querySelector('.packet-age');if(packet&&age)age.textContent=relativeAge(packet);});
 }
+// ---------- Log zdrowia API (port ApiHealthLogStore/ApiHealthMonitor) ----------
+const API_HEALTH_STORAGE='m2-web-api-health-v1';
+let apiHealthLog=loadApiHealthLog();
+function loadApiHealthLog() { try { const value=JSON.parse(sessionStorage.getItem(API_HEALTH_STORAGE)||'{}'); return value&&typeof value==='object'?value:{}; } catch { return {}; } }
+function saveApiHealthLog() { try { sessionStorage.setItem(API_HEALTH_STORAGE,JSON.stringify(apiHealthLog)); } catch {} }
+function recordApiHealth(source, ok, responseMs) {
+  const host=sourceLabel(source), entries=apiHealthLog[host]||[];
+  const status=ok?'ONLINE':'OFFLINE', last=entries[0];
+  if(last&&last.status===status){ last.last=Date.now(); last.response=responseMs; last.checks=(last.checks||1)+1; }
+  else entries.unshift({ start:Date.now(), last:Date.now(), status, response:responseMs, checks:1, ongoing:true });
+  apiHealthLog[host]=entries.slice(0,250); saveApiHealthLog();
+}
+function resetApiHealthLog(source) { delete apiHealthLog[sourceLabel(source)]; saveApiHealthLog(); }
+
+// ---------- Zamknięcie aplikacji (odpowiednik Close application z Androida) ----------
+let appClosed=false;
+function closeApplication() {
+  appClosed=true;
+  document.getElementById('intro')?.remove();
+  const overlay=document.createElement('div');
+  overlay.id='app-closed';
+  overlay.innerHTML=`<img src="assets/m2-logo.svg" alt="M²"><h2>M² closed</h2><p>Background listening stopped.</p><button type="button" id="app-closed-reopen">Open again</button>`;
+  document.body.appendChild(overlay);
+  overlay.querySelector('#app-closed-reopen').addEventListener('click',()=>location.reload());
+}
+let settingsApiLogOpen=false;
+function renderApiLogDialog() {
+  const entries=apiHealthLog[sourceLabel(activeApiSource)]||[];
+  const rows=entries.map(entry=>`<div class="api-log-row ${entry.status==='ONLINE'?'online':'offline'}"><b>${entry.status}</b><span>${escapeHtml(new Intl.DateTimeFormat('pl-PL',{timeZone:'Europe/Warsaw',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(entry.start))} – ${escapeHtml(new Intl.DateTimeFormat('pl-PL',{timeZone:'Europe/Warsaw',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(entry.last))}</span><span>${Number(entry.response)||0} ms · ${Number(entry.checks||1)} checks</span></div>`).join('');
+  return `<div class="dialog-backdrop" id="api-log-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-label="API log"><h3>API log · ${escapeHtml(sourceLabel(activeApiSource))}</h3><div class="api-log-list">${rows||'<div class="empty-feed">No checks recorded yet.</div>'}</div><div class="dialog-actions"><button type="button" class="danger-link" id="api-log-reset">Reset</button><button type="button" class="dialog-cancel" id="api-log-close">Close</button></div></section></div>`;
+}
 function renderSettings() {
-  screen.innerHTML = `<section class="settings-screen"><div class="eyebrow">PERSONALIZE M²</div><h1>Settings</h1><section class="api-settings"><h2>Packet APIs</h2><p class="settings-intro">The app tries these APIs in order. If the first one is unavailable, it switches automatically to the next working source.</p><div class="api-source-list">${apiSources.map((source,index)=>`<div class="api-source-row"><span class="api-order">${index+1}</span><code>${escapeHtml(source)}</code>${source===activeApiSource?'<b class="api-active-badge">ACTIVE</b>':''}<button type="button" data-primary-api="${index}" ${index===0?'disabled':''}>Make primary</button>${apiSources.length>1?`<button type="button" data-remove-api="${index}" aria-label="Remove API ${escapeHtml(source)}">Remove</button>`:''}</div>`).join('')}</div><div class="api-add-form"><label for="api-source-input">Add API base URL</label><div><input id="api-source-input" type="url" autocomplete="url" placeholder="https://api.example.org"><button id="add-api-source" type="button">Add API</button></div><p id="api-source-error" class="form-error" role="status" aria-live="polite"></p></div></section><section class="refresh-settings"><h2>Live refresh interval</h2><p class="settings-intro">Choose how often the packet feed is checked. The countdown next to LIVE follows this interval.</p><label for="refresh-interval">Refresh every</label><select id="refresh-interval">${REFRESH_OPTIONS.map(value=>`<option value="${value}" ${value===refreshIntervalMs?'selected':''}>${formatRefreshInterval(value)}</option>`).join('')}</select></section><section class="tracked-settings"><h2>Tracked keys</h2><p class="settings-intro">Add a full public key to recognize it in packet sources, observers and recorded routes.</p><div class="key-form"><label>Public key · 64 hex characters<input id="tracked-key" autocomplete="off" spellcheck="false" placeholder="Paste the full public key" maxlength="64"></label><button class="add-key-button" id="add-tracked-key" type="button">Add key</button><div id="key-form-error" class="form-error" role="status" aria-live="polite"></div></div><div class="key-storage-note"><span>SESSION ONLY</span> Keys and names are kept only for this browser session. Packet counts below use the loaded feed (${liveState.packets.length} of 250 packets).</div><div class="tracked-key-list"><div class="keys-heading"><strong>Saved keys</strong><span>${trackedKeys.length}</span></div>${trackedKeys.length?trackedKeys.map((item,index)=>`<div class="tracked-key-row"><div><strong>${escapeHtml(item.name||'Name unavailable')}</strong><code>${escapeHtml(item.key)}</code><small class="tracked-packet-count">${packetCountForTrackedKey(item.key)} matching packets in loaded feed</small></div><button type="button" data-remove-key="${index}" aria-label="Remove ${escapeHtml(item.name||'key')}">Remove</button></div>`).join(''):'<div class="empty-keys">No tracked keys yet.</div>'}</div></section></section>`;
+  screen.innerHTML = `<section class="settings-screen"><div class="eyebrow">PERSONALIZE M²</div><h1>Settings</h1><section class="api-settings"><div class="settings-heading"><h2>Packet APIs</h2><button type="button" id="open-api-log">Log</button></div><p class="settings-intro">The app tries these APIs in order. If the first one is unavailable, it switches automatically to the next working source.</p><div class="api-source-list">${apiSources.map((source,index)=>`<div class="api-source-row"><span class="api-order">${index+1}</span><code>${escapeHtml(source)}</code>${source===activeApiSource?'<b class="api-active-badge">ACTIVE</b>':''}<button type="button" data-primary-api="${index}" ${index===0?'disabled':''}>Make primary</button>${apiSources.length>1?`<button type="button" data-remove-api="${index}" aria-label="Remove API ${escapeHtml(source)}">Remove</button>`:''}</div>`).join('')}</div><div class="api-add-form"><label for="api-source-input">Add API base URL</label><div><input id="api-source-input" type="url" autocomplete="url" placeholder="https://api.example.org"><button id="add-api-source" type="button">Add API</button></div><p id="api-source-error" class="form-error" role="status" aria-live="polite"></p></div></section><section class="refresh-settings"><h2>Live refresh interval</h2><p class="settings-intro">Choose how often the packet feed is checked. The countdown next to LIVE follows this interval.</p><label for="refresh-interval">Refresh every</label><select id="refresh-interval">${REFRESH_OPTIONS.map(value=>`<option value="${value}" ${value===refreshIntervalMs?'selected':''}>${formatRefreshInterval(value)}</option>`).join('')}</select></section><section class="tracked-settings"><h2>Tracked keys</h2><p class="settings-intro">Add a full public key to recognize it in packet sources, observers and recorded routes.</p><div class="key-form"><label>Public key · 64 hex characters<input id="tracked-key" autocomplete="off" spellcheck="false" placeholder="Paste the full public key" maxlength="64"></label><button class="add-key-button" id="add-tracked-key" type="button">Add key</button><div id="key-form-error" class="form-error" role="status" aria-live="polite"></div></div><div class="key-storage-note"><span>SESSION ONLY</span> Keys and names are kept only for this browser session. Packet counts below use the loaded feed (${liveState.packets.length} of 250 packets).</div><div class="tracked-key-list"><div class="keys-heading"><strong>Saved keys</strong><span>${trackedKeys.length}</span></div>${trackedKeys.length?trackedKeys.map((item,index)=>`<div class="tracked-key-row"><div><strong>${escapeHtml(item.name||'Name unavailable')}</strong><code>${escapeHtml(item.key)}</code><small class="tracked-packet-count">${packetCountForTrackedKey(item.key)} matching packets in loaded feed</small></div><button type="button" data-remove-key="${index}" aria-label="Remove ${escapeHtml(item.name||'key')}">Remove</button></div>`).join(''):'<div class="empty-keys">No tracked keys yet.</div>'}</div></section><section class="about-settings"><h2>About M²</h2><p class="settings-intro">Exports (my log, maps) are saved to your browser's download folder. Channel keys never leave this browser.</p><a class="settings-link" href="https://ko-fi.com/beepoo304" target="_blank" rel="noopener noreferrer">Support M² on Ko-fi — ko-fi.com/beepoo304</a><a class="settings-link" href="https://github.com/beepoo304/M2_WEB" target="_blank" rel="noopener noreferrer">Open source on GitHub — github.com/beepoo304/M2_WEB</a><p class="version-note">M² Web version 0.3.0</p><button type="button" id="close-application" class="danger-button">Close application</button><p class="settings-intro">Stops background listening and closes M².</p></section></section>${settingsApiLogOpen?renderApiLogDialog():''}`;
   screen.querySelector('.key-storage-note').lastChild.textContent=' Keys, start dates and packet counters are kept only for this browser session.';
   screen.querySelectorAll('.tracked-packet-count').forEach((element,index)=>{
     const item=trackedKeys[index];
@@ -530,6 +749,11 @@ function renderSettings() {
   });
   keyInput.addEventListener('input',()=>{error.textContent='';});
   screen.querySelectorAll('[data-remove-key]').forEach(button=>button.addEventListener('click',()=>{trackedKeys.splice(Number(button.dataset.removeKey),1);saveTrackedKeys();renderSettings();}));
+  document.getElementById('open-api-log')?.addEventListener('click',()=>{ settingsApiLogOpen=true; renderSettings(); });
+  document.getElementById('api-log-close')?.addEventListener('click',()=>{ settingsApiLogOpen=false; renderSettings(); });
+  document.getElementById('api-log-backdrop')?.addEventListener('click',event=>{ if(event.target===event.currentTarget){ settingsApiLogOpen=false; renderSettings(); } });
+  document.getElementById('api-log-reset')?.addEventListener('click',()=>{ resetApiHealthLog(activeApiSource); renderSettings(); });
+  document.getElementById('close-application')?.addEventListener('click',closeApplication);
 }
 function renderMyLog() {
   const rows=myLogPackets.map(packet=>`<button class="packet-row packet-own" data-my-log-id="${escapeHtml(packet.id)}" type="button"><span class="packet-time"><b>${packetTime(packet)}</b><small class="packet-age">${relativeAge(packet)}</small></span><span class="packet-type type-${Number(packet.payload_type)}">${escapeHtml(packetType(packet))}<small>${escapeHtml((packet.direction||'rx').toUpperCase())}</small></span><span class="packet-copy"><strong>${liveIdentityMarkup(packet)}</strong><span>${renderTrackedText(packetSummary(packet))}</span><small>${escapeHtml(packet.observer_iata||'Observer')} · ${Number(packet.observation_count||1)} observation${Number(packet.observation_count||1)===1?'':'s'}</small></span><span class="packet-route">${escapeHtml(pathSummary(packet))}<small>${packet.rssi==null?'':`${escapeHtml(packet.rssi)} dBm`}</small></span></button>`).join('');
@@ -544,30 +768,205 @@ function renderMyLog() {
   document.getElementById('clear-my-log')?.addEventListener('click',()=>{myLogPackets=[];saveMyLogPackets();renderMyLog();});
   document.getElementById('export-my-log')?.addEventListener('click',()=>{const content=myLogPackets.map(packet=>`${packetTime(packet)} · ${packetType(packet)} · ${liveIdentityLabel(packet)}\n${packetSummary(packet)}\nHash: ${packet.hash||'—'}\n`).join('\n');const blob=new Blob([content],{type:'text/plain'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`M2_MY_LOG_${new Date().toISOString().replace(/[:.]/g,'-')}.txt`;link.click();URL.revokeObjectURL(url);});
 }
-async function renderChannels() {
-  const selected=liveState.selectedChannel;
-  const channel=selected&&savedChannels.find(item=>item.name===selected);
-  if(channel&&!channel.loading&&!channel.messages){
-    channel.loading=true; renderChannels();
-    try { const response=await fetch(apiProxyUrl('channel',{name:channel.name}),{cache:'no-store'});const data=await response.json();if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);channel.messages=Array.isArray(data.messages)?data.messages:[];channel.error=''; }
-    catch(error){channel.error=error.message||'Could not load channel messages';}
-    finally {channel.loading=false;saveChannels();renderChannels();}
-    return;
+// ---------- Ekran Channels: pełny port z M² Android (ChannelsScreen.kt) ----------
+const channelUiState={ add:false, addMode:null, namedPublic:false, input:'', invalid:false, renameTarget:'', renameText:'', statistics:false, appStatistics:false, details:null, detailsLoading:false };
+function channelByIdentity(nameOrHash) { return savedChannels.find(item=>item.name===nameOrHash||String(item.hash).toLowerCase()===String(nameOrHash).toLowerCase()); }
+
+function renderChannelAddDialog() {
+  if(!channelUiState.add)return '';
+  const mode=channelUiState.addMode;
+  let body='';
+  if(mode===null) body=`<p class="dialog-note">What kind of channel do you want to add?</p>
+    <button type="button" class="dialog-option" id="channel-add-public"><b>Public channel</b><span>I know its name, for example #test</span></button>
+    <button type="button" class="dialog-option" id="channel-add-private"><b>Private channel</b><span>I have a channel key or QR code</span></button>`;
+  else if(mode==='public') {
+    body=channelUiState.namedPublic
+      ? `<p class="dialog-note">Enter the channel name</p><label class="dialog-field"><span>Channel name</span><div class="dialog-input"><b>#</b><input id="channel-name-input" autocomplete="off" spellcheck="false" value="${escapeHtml(channelUiState.input.replace(/^#/,''))}" placeholder="test"></div></label><p class="dialog-hint">${channelUiState.invalid?'Enter a channel name':'Example: #test'}</p>`
+      : `<p class="dialog-note">Which public channel do you want to add?</p>
+        <button type="button" class="dialog-option" id="channel-add-main-public"><b>Main public channel</b><span>The standard MeshCore public channel</span></button>
+        <button type="button" class="dialog-option" id="channel-add-named"><b>Named public channel</b><span>For example #test or #bot</span></button>`;
+  } else if(mode==='private') {
+    body=`<p class="dialog-note">Paste the channel key or meshcore:// link</p>
+      <label class="dialog-field"><span>Channel key</span><input id="channel-key-input" autocomplete="off" spellcheck="false" value="${escapeHtml(channelUiState.input)}" placeholder="32 or 64 hex characters"></label>
+      <p class="dialog-hint">${channelUiState.invalid?'This key is not valid':'Private channels are decrypted locally; the key never leaves this browser.'}</p>`;
   }
-  const list=savedChannels.map(item=>`<div class="channel-row" data-channel="${escapeHtml(item.name)}"><button class="channel-open" type="button"><b>${escapeHtml(item.name)}</b><span>${item.loading?'Loading…':item.messages?`${item.messages.length} messages`:'Open messages'}</span></button><button data-remove-channel="${escapeHtml(item.name)}" type="button">Remove</button></div>`).join('');
+  const confirmLabel=mode==='private'||(mode==='public'&&channelUiState.namedPublic)?'<button type="button" class="dialog-confirm" id="channel-add-confirm">Add channel</button>':'';
+  return `<div class="dialog-backdrop" id="channel-add-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-label="Add channel"><h3>${mode==='public'?'Public channel':mode==='private'?'Private channel':'Add channel'}</h3>${body}<div class="dialog-actions">${confirmLabel}<button type="button" class="dialog-cancel" id="channel-add-cancel">${mode===null?'Cancel':'Back'}</button></div></section></div>`;
+}
+
+async function channelAddConfirm() {
+  const value=channelUiState.addMode==='private'?channelUiState.input.trim():`#${channelUiState.input.trim().replace(/^#/,'')}`;
+  const parsed=await M2Channels.parseChannel(value);
+  if(!parsed){ channelUiState.invalid=true; renderChannels(); return; }
+  if(!savedChannels.some(item=>(item.secret||item.name)===value||item.name===parsed.name&&item.secret===parsed.secret)){
+    savedChannels.unshift({ ...parsed, lastReadAt:0, clearedAt:0, messages:[], loading:false, error:'' });
+    if(savedChannels.length>50)savedChannels.length=50;
+    saveChannels();
+  }
+  channelUiState.add=false; channelUiState.addMode=null; channelUiState.namedPublic=false; channelUiState.input=''; channelUiState.invalid=false;
+  channelStatsRefresh(); renderChannels();
+}
+
+function renderChannelMessageDetails() {
+  if(!channelUiState.details)return '';
+  const message=channelUiState.details, loading=channelUiState.detailsLoading;
+  const route=loading?'<p class="details-loading">Loading message details…</p>'
+    :`<dl class="details-list">
+      <div><dt>Time</dt><dd>${escapeHtml(warsawDateTime(message.timestamp))}</dd></div>
+      <div><dt>Hops</dt><dd>${Number(message.hops||0)}</dd></div>
+      <div><dt>Route</dt><dd>${escapeHtml(message.route&&message.route.length?message.route.join(' → '):'Unavailable')}</dd></div>
+      <div><dt>Seen</dt><dd>${Number(message.repeats||1)} observations</dd></div>
+      <div><dt>Observers</dt><dd>${escapeHtml((message.observers||[]).join(', ')||'Unavailable')}</dd></div>
+      <div><dt>Signal</dt><dd>${message.rssi==null?'—':`${message.rssi} dBm`} · ${message.snr==null?'—':`${message.snr} dB`}</dd></div>
+      <div><dt>Packet</dt><dd class="mono">${escapeHtml(message.packetHash||message.id)}</dd></div>
+    </dl>`;
+  return `<div class="dialog-backdrop" id="channel-details-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-label="Message details"><h3>${escapeHtml(message.sender||'Anonymous')}</h3>${route}<div class="dialog-actions"><button type="button" class="dialog-cancel" id="channel-details-close">Close</button></div></section></div>`;
+}
+
+async function openChannelMessageDetails(message) {
+  channelUiState.details={ ...message }; channelUiState.detailsLoading=true; renderChannels();
+  let details={ ...message };
+  try {
+    const response=await fetch(apiProxyUrl('packet',{id:String(message.id)}),{cache:'no-store'});
+    if(response.ok){
+      const data=await response.json();
+      const packet=data?.packet||{};
+      let path=[];
+      try{ path=Array.isArray(packet._parsedPath)?packet._parsedPath:JSON.parse(packet.path_json||'[]'); }catch{}
+      details={ ...details, route:Array.isArray(path)?path:[], rssi:packet.rssi??details.rssi??null };
+    }
+  } catch {}
+  channelUiState.details=details; channelUiState.detailsLoading=false; renderChannels();
+}
+
+function renderChannelStatistics() {
+  const events=loadChannelStats();
+  const selectedKey=channelUiState.statsKey||trackedKeys[0]?.key||'';
+  const selectedEvents=events.filter(event=>String(event.key).toLowerCase()===selectedKey.toLowerCase());
+  const grouped=new Map();
+  selectedEvents.forEach(event=>{
+    if(!grouped.has(event.channel))grouped.set(event.channel,[]);
+    grouped.get(event.channel).push(event);
+  });
+  const orderedChannels=[...grouped.entries()].sort((a,b)=>Math.max(...b[1].map(messageEpochOf))-Math.max(...a[1].map(messageEpochOf)));
+  const rows=orderedChannels.map(([channel,values])=>{
+    const times=values.map(messageEpochOf);
+    return `<div class="stats-group"><div class="stats-group-head"><b>${escapeHtml(channel)}</b><span>${values.length} packets</span></div>
+      <small>First: ${escapeHtml(warsawDateTime(values.find(event=>messageEpochOf(event)===Math.min(...times))?.timestamp))}</small>
+      <small>Last: ${escapeHtml(warsawDateTime(values.find(event=>messageEpochOf(event)===Math.max(...times))?.timestamp))}</small>
+      <small>Sent ${values.filter(event=>event.sent).length} · Mentions ${values.filter(event=>event.mention).length}</small></div>`;
+  }).join('');
+  return `<section class="channels-screen"><div class="eyebrow">CHANNEL STATISTICS</div><h1>Channel statistics</h1>
+    <label class="dialog-field"><span>Tracked key</span><select id="stats-key">${trackedKeys.map(item=>`<option value="${escapeHtml(item.key)}" ${item.key===selectedKey?'selected':''}>${escapeHtml(item.key.slice(0,4).toUpperCase())} · ${escapeHtml(item.name||'Unnamed')}</option>`).join('')||'<option value="">Add a tracked key first</option>'}</select></label>
+    <div class="stats-totals"><div><b>${selectedEvents.filter(event=>event.sent).length}</b><span>Sent</span></div><div><b>${selectedEvents.filter(event=>event.mention).length}</b><span>Mentions</span></div><div><b>${grouped.size}</b><span>Channels</span></div></div>
+    ${selectedEvents.length?`<button type="button" class="danger-link" id="stats-reset">Reset</button>`:''}
+    <div class="stats-list">${rows||'<div class="empty-feed">No related channel traffic in the last 24 hours.</div>'}</div>
+    <button type="button" class="back-link" id="stats-back">← Channels</button></section>`;
+}
+
+function renderAppStatistics() {
+  return `<section class="channels-screen"><div class="eyebrow">APP PACKET STATISTICS</div><h1>App packet statistics</h1>
+    <dl class="details-list">
+      <div><dt>Started</dt><dd>${escapeHtml(warsawDateTime(new Date(appStats.startedAtMs).toISOString()))}</dd></div>
+      <div><dt>Packets received</dt><dd class="stats-big">${Number(appStats.packetCount).toLocaleString('en-US')}</dd></div>
+      <div><dt>Total app running time</dt><dd>${escapeHtml(formatRunningTime(appStats.accumulatedRunningMs))}</dd></div>
+    </dl>
+    ${Object.entries(appStats.brokerRunningMs).map(([broker,ms])=>`<p class="broker-time">${escapeHtml(broker)} <b>${escapeHtml(formatRunningTime(ms))}</b></p>`).join('')}
+    <button type="button" class="danger-link" id="app-stats-reset">Reset</button>
+    <button type="button" class="back-link" id="app-stats-back">← Channels</button></section>`;
+}
+
+async function renderChannels() {
+  if(channelUiState.appStatistics){ renderChannelsAppStats(); return; }
+  if(channelUiState.statistics){ renderChannelsStats(); return; }
+  const selected=liveState.selectedChannel;
+  const channel=selected?channelByIdentity(selected):null;
+  if(channel&&!channel.isPrivate&&!(Array.isArray(channel.messages)&&channel.messages.length)&&!channel.loading){ channelsLoadRemote(channel); return; }
+  if(channel){ channel.lastReadAt=Date.now(); saveChannels(); }
+  const trackedNames=trackedNamesLower();
+  const orderedChannels=[...savedChannels].sort((a,b)=>{
+    const aTracked=(a.messages||[]).some(message=>trackedNames.some(name=>String(message.sender||'').trim().toLowerCase()===name))||false;
+    const bTracked=(b.messages||[]).some(message=>trackedNames.some(name=>String(message.sender||'').trim().toLowerCase()===name))||false;
+    if(aTracked!==bTracked)return aTracked?-1:1;
+    return Math.max(0,...(b.messages||[]).map(messageEpochOf))-Math.max(0,...(a.messages||[]).map(messageEpochOf));
+  });
+  const list=orderedChannels.map(item=>{
+    const unread=(item.messages||[]).filter(message=>messageEpochOf(message)>Number(item.lastReadAt||0));
+    const trackedUnread=unread.filter(messageIsTracked).length, otherUnread=unread.length-trackedUnread;
+    return `<div class="channel-row" data-channel="${escapeHtml(item.name)}">
+      <button class="channel-open" type="button"><b>${escapeHtml(item.name)}${item.isPrivate?' 🔑':''}</b><span>${escapeHtml(String(item.hash||'').slice(0,2))} · ${item.loading?'Loading…':item.error?'Error':`${(item.messages||[]).length} messages`}</span></button>
+      ${trackedUnread?`<b class="unread-badge tracked">${trackedUnread}</b>`:''}${otherUnread?`<b class="unread-badge">${otherUnread}</b>`:''}
+      ${item.isPrivate?`<button type="button" data-rename-channel="${escapeHtml(item.name)}" title="Rename channel">✎</button>`:''}
+      <button type="button" data-remove-channel="${escapeHtml(item.name)}" title="Remove channel">🗑</button>
+    </div>`;
+  }).join('');
   const messages=channel?.messages||[];
-  screen.innerHTML=`<section class="channels-screen"><div class="eyebrow">SAVED CHANNELS</div><h1>${channel?escapeHtml(channel.name):'Channels'}</h1>${channel?`<button id="back-channels" type="button">← All channels</button><div class="channel-messages">${channel.loading?'<div class="empty-feed">Loading messages…</div>':channel.error?`<div class="feed-error">${escapeHtml(channel.error)}</div>`:messages.map(message=>`<article><b>${escapeHtml(message.sender||'Anonymous')}</b><small>${escapeHtml(message.timestamp||'—')} · ${Number(message.hops||0)} hops</small><p>${renderTrackedText(message.text||'')}</p></article>`).join('')||'<div class="empty-feed">No messages received.</div>'}</div>`:`<div class="channel-add"><input id="channel-name" placeholder="#channel or public" autocomplete="off"><button id="add-channel" type="button">Add channel</button></div><div class="channel-list">${list||'<div class="empty-feed">Add a public channel to begin.</div>'}</div>`}</section>`;
-  document.getElementById('back-channels')?.addEventListener('click',()=>{liveState.selectedChannel='';renderChannels();});
-  document.getElementById('add-channel')?.addEventListener('click',()=>{const input=document.getElementById('channel-name');const name=input.value.trim();if(!/^(public|#[^\s]{1,127})$/i.test(name)){input.setCustomValidity('Use public or a # channel name.');input.reportValidity();return;}if(!savedChannels.some(item=>item.name.toLowerCase()===name.toLowerCase())){savedChannels.unshift({name,messages:null,error:'',loading:false});saveChannels();}renderChannels();});
-  screen.querySelectorAll('.channel-open').forEach(button=>button.addEventListener('click',()=>{liveState.selectedChannel=button.closest('[data-channel]').dataset.channel;renderChannels();}));
-  screen.querySelectorAll('[data-remove-channel]').forEach(button=>button.addEventListener('click',event=>{event.stopPropagation();savedChannels=savedChannels.filter(item=>item.name!==button.dataset.removeChannel);saveChannels();renderChannels();}));
+  const messageList=channel?(channel.loading?'<div class="empty-feed">Loading messages…</div>':channel.error?`<div class="feed-error"><strong>Channel unavailable</strong><span>${escapeHtml(channel.error)}</span></div>`:messages.map(message=>{
+    const tracked=messageIsTracked(message);
+    return `<article class="channel-message ${tracked?'tracked':''}" data-message-id="${escapeHtml(message.id)}"><b>${renderTrackedText(message.sender)}</b><small>${escapeHtml(warsawDateTime(message.timestamp))} · ${Number(message.hops||0)} hops</small><p>${renderTrackedText(message.text||'')}</p></article>`;
+  }).join('')||'<div class="empty-feed">No messages received.</div>'):'';
+  screen.innerHTML=`<section class="channels-screen"><div class="eyebrow">SAVED CHANNELS</div><h1>${channel?escapeHtml(channel.name):'Channels'}</h1>
+    ${channel?`<div class="channel-view-head"><button id="back-channels" type="button">← All channels</button><div><button type="button" id="channel-refresh">↻ Refresh</button><button type="button" id="channel-clear" ${messages.length?'':'disabled'}>Delete all</button></div><span>${messages.length} messages</span></div><div class="channel-messages">${messageList}</div>`
+    :`<button type="button" class="add-channel-tile" id="open-add-channel">＋ Add channel</button>
+      ${savedChannels.length?`<div class="channel-list">${list}</div>`:'<div class="empty-feed">Channels you add will appear here.</div>'}
+      <button type="button" class="stats-tile" id="open-channel-stats">Channel statistics</button>
+      <button type="button" class="stats-tile" id="open-app-stats">App packet statistics</button>`}
+  </section>${renderChannelAddDialog()}${renderChannelMessageDetails()}${channelUiState.renameTarget?`<div class="dialog-backdrop" id="channel-rename-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-label="Rename channel"><h3>Channel name</h3><label class="dialog-field"><span>Local name</span><input id="channel-rename-input" value="${escapeHtml(channelUiState.renameText)}"></label><div class="dialog-actions"><button type="button" class="dialog-confirm" id="channel-rename-save">Save</button><button type="button" class="dialog-cancel" id="channel-rename-cancel">Cancel</button></div></section></div>`:''}`;
+  document.getElementById('open-add-channel')?.addEventListener('click',()=>{ channelUiState.add=true; channelUiState.addMode=null; channelUiState.namedPublic=false; channelUiState.input=''; channelUiState.invalid=false; renderChannels(); });
+  document.getElementById('channel-add-public')?.addEventListener('click',()=>{ channelUiState.addMode='public'; channelUiState.namedPublic=false; channelUiState.input=''; channelUiState.invalid=false; renderChannels(); });
+  document.getElementById('channel-add-private')?.addEventListener('click',()=>{ channelUiState.addMode='private'; channelUiState.input=''; channelUiState.invalid=false; renderChannels(); });
+  document.getElementById('channel-add-main-public')?.addEventListener('click',async()=>{ const parsed=await M2Channels.parseChannel('public'); if(!savedChannels.some(item=>item.name==='public')){ savedChannels.unshift({ ...parsed, lastReadAt:0, clearedAt:0, messages:[], loading:false, error:'' }); saveChannels(); } channelUiState.add=false; channelUiState.addMode=null; channelUiState.namedPublic=false; renderChannels(); });
+  document.getElementById('channel-add-named')?.addEventListener('click',()=>{ channelUiState.namedPublic=true; channelUiState.input=''; channelUiState.invalid=false; renderChannels(); });
+  const nameInput=document.getElementById('channel-name-input');
+  nameInput?.addEventListener('input',()=>{ channelUiState.input=nameInput.value; channelUiState.invalid=false; });
+  nameInput?.addEventListener('keydown',event=>{ if(event.key==='Enter')channelAddConfirm(); });
+  const keyInput=document.getElementById('channel-key-input');
+  keyInput?.addEventListener('input',()=>{ channelUiState.input=keyInput.value.trim(); channelUiState.invalid=false; });
+  keyInput?.addEventListener('keydown',event=>{ if(event.key==='Enter')channelAddConfirm(); });
+  document.getElementById('channel-add-confirm')?.addEventListener('click',channelAddConfirm);
+  document.getElementById('channel-add-cancel')?.addEventListener('click',()=>{
+    if(channelUiState.addMode===null)channelUiState.add=false;
+    else if(channelUiState.addMode==='public'&&channelUiState.namedPublic){ channelUiState.namedPublic=false; channelUiState.input=''; }
+    else { channelUiState.addMode=null; channelUiState.namedPublic=false; channelUiState.input=''; }
+    channelUiState.invalid=false; renderChannels();
+  });
+  document.getElementById('channel-add-backdrop')?.addEventListener('click',event=>{ if(event.target===event.currentTarget){ channelUiState.add=false; channelUiState.addMode=null; channelUiState.namedPublic=false; channelUiState.invalid=false; renderChannels(); } });
+  document.getElementById('back-channels')?.addEventListener('click',()=>{ liveState.selectedChannel=''; renderChannels(); });
+  document.getElementById('channel-refresh')?.addEventListener('click',()=>{ if(channel){ if(!channel.isPrivate)channelsLoadRemote(channel); if(channel.secret)channelsDecryptLive(liveState.packets); } });
+  document.getElementById('channel-clear')?.addEventListener('click',()=>{ if(channel){ channel.messages=[]; channel.clearedAt=Date.now(); saveChannels(); channelStatsRefresh(); renderChannels(); } });
+  document.getElementById('channel-details-close')?.addEventListener('click',()=>{ channelUiState.details=null; renderChannels(); });
+  document.getElementById('channel-details-backdrop')?.addEventListener('click',event=>{ if(event.target===event.currentTarget){ channelUiState.details=null; renderChannels(); } });
+  document.getElementById('stats-key')?.addEventListener('change',event=>{ channelUiState.statsKey=event.target.value; renderChannelsStats(); });
+  document.getElementById('stats-reset')?.addEventListener('click',()=>{ channelStatsReset(channelUiState.statsKey||trackedKeys[0]?.key||''); renderChannelsStats(); });
+  document.getElementById('stats-back')?.addEventListener('click',()=>{ channelUiState.statistics=false; renderChannels(); });
+  document.getElementById('app-stats-reset')?.addEventListener('click',()=>{ if(confirm('Reset app packet statistics? The packet counter, start date and accumulated running time will start again from zero.')){ appStatsReset(); renderChannelsAppStats(); } });
+  document.getElementById('app-stats-back')?.addEventListener('click',()=>{ channelUiState.appStatistics=false; renderChannels(); });
+  document.getElementById('open-channel-stats')?.addEventListener('click',()=>{ channelUiState.statistics=true; channelStatsRefresh(); renderChannelsStats(); });
+  document.getElementById('open-app-stats')?.addEventListener('click',()=>{ channelUiState.appStatistics=true; renderChannelsAppStats(); });
+  document.getElementById('channel-rename-save')?.addEventListener('click',()=>{ const target=channelByIdentity(channelUiState.renameTarget); if(target){ target.name=channelUiState.renameText.trim()||target.name; saveChannels(); } channelUiState.renameTarget=''; renderChannels(); });
+  document.getElementById('channel-rename-cancel')?.addEventListener('click',()=>{ channelUiState.renameTarget=''; renderChannels(); });
+  screen.querySelectorAll('.channel-open').forEach(button=>button.addEventListener('click',()=>{ liveState.selectedChannel=button.closest('[data-channel]').dataset.channel; renderChannels(); }));
+  screen.querySelectorAll('[data-remove-channel]').forEach(button=>button.addEventListener('click',event=>{ event.stopPropagation(); savedChannels=savedChannels.filter(item=>item.name!==button.dataset.removeChannel); saveChannels(); channelStatsRefresh(); renderChannels(); }));
+  screen.querySelectorAll('[data-rename-channel]').forEach(button=>button.addEventListener('click',event=>{ event.stopPropagation(); channelUiState.renameTarget=button.dataset.renameChannel; channelUiState.renameText=button.dataset.renameChannel; renderChannels(); }));
+  screen.querySelectorAll('.channel-message').forEach(article=>article.addEventListener('click',()=>{ const message=(channel?.messages||[]).find(item=>String(item.id)===article.dataset.messageId); if(message)openChannelMessageDetails(message); }));
+}
+function renderChannelsStats() {
+  screen.innerHTML=renderChannelStatistics();
+  document.getElementById('stats-key')?.addEventListener('change',event=>{ channelUiState.statsKey=event.target.value; renderChannelsStats(); });
+  document.getElementById('stats-reset')?.addEventListener('click',()=>{ channelStatsReset(channelUiState.statsKey||trackedKeys[0]?.key||''); renderChannelsStats(); });
+  document.getElementById('stats-back')?.addEventListener('click',()=>{ channelUiState.statistics=false; renderChannels(); });
+}
+function renderChannelsAppStats() {
+  screen.innerHTML=renderAppStatistics();
+  document.getElementById('app-stats-reset')?.addEventListener('click',()=>{ if(confirm('Reset app packet statistics? The packet counter, start date and accumulated running time will start again from zero.')){ appStatsReset(); renderChannelsAppStats(); } });
+  document.getElementById('app-stats-back')?.addEventListener('click',()=>{ channelUiState.appStatistics=false; renderChannels(); });
 }
 function renderPlaceholder(name) {
   const descriptions = {'My log':'A focused log of packets related to the public keys you save in Settings.','Channels':'Public and locally decrypted private channels, with the M² channel tools.','Map':'Tracked packet routes, repeaters, distances and the longest-route flight.','Settings':'Saved devices, API selection, refresh behaviour and web-session key controls.','Guide':'Packet types, route colours, map modes and network-data notes.'};
   screen.innerHTML = `<section class="welcome-panel"><div class="eyebrow">${escapeHtml(name.toUpperCase())}</div><h1>${escapeHtml(name)}</h1><p>${escapeHtml(descriptions[name])}</p></section>`;
 }
 function currentScreen() { return document.querySelector('.nav-item.active')?.dataset.screen || 'Live'; }
-function renderScreen(name) { if(name==='Live')renderLive();else if(name==='My log')renderMyLog();else if(name==='Channels')renderChannels();else if(name==='Settings')renderSettings();else if(name==='Guide')renderGuide();else renderPlaceholder(name); }
+function renderScreen(name) { if(name==='Live')renderLive();else if(name==='My log')renderMyLog();else if(name==='Channels')renderChannels();else if(name==='Map')renderMap();else if(name==='Settings')renderSettings();else if(name==='Guide')renderGuide();else renderPlaceholder(name); }
 const allowedScreens=tabButtons.map(button=>button.dataset.screen);
 let initialScreen='Live';try{const saved=sessionStorage.getItem(ACTIVE_TAB_STORAGE);if(allowedScreens.includes(saved))initialScreen=saved;}catch{}
 tabButtons.forEach(item=>{const active=item.dataset.screen===initialScreen;item.classList.toggle('active',active);if(active)item.setAttribute('aria-current','page');else item.removeAttribute('aria-current');});
@@ -581,6 +980,7 @@ tabButtons.forEach(button => button.addEventListener('click', () => {
 loadPackets();
 document.getElementById('refresh-live-top')?.addEventListener('click', () => loadPackets(true));
 setInterval(() => {
+  if(appClosed) return;
   if(document.hidden || document.querySelector('.nav-item.active')?.dataset.screen!=='Live') return;
     if(Date.now() >= nextRefreshAt && !liveState.loading) loadPackets(false);
   updateRefreshCountdown();

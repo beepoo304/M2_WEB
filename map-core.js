@@ -205,5 +205,5 @@
 
   const api = { REL, MODES, isReliableHop, isTrackable, hasValidGps, distanceKm, buildDirectory, confirmedMissingGps, resolve, measuredKm, edges, splitAtUnknown, withoutLoops, metrics, accepts, routeEvent };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  else root.M2MapCore = api;
+  else { root.M2MapCore = api; root.MapCore = api; }
 })(typeof window !== 'undefined' ? window : globalThis);

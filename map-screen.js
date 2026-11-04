@@ -148,6 +148,8 @@ function mapRender() {
       <div class="map-buttons">
         <button type="button" id="map-toggle" class="${mapState.running ? 'map-stop' : 'map-start'}">${mapState.running ? 'Stop' : 'Start'}</button>
         <button type="button" id="map-restart">Restart</button>
+        <button type="button" id="map-export" title="Export map file">Export</button>
+        <button type="button" id="map-import" title="Load map file">Load</button>
       </div>
     </div>
     <div class="map-counters">
@@ -164,6 +166,8 @@ function mapRender() {
   document.getElementById('map-toggle').addEventListener('click', () => (mapState.running ? mapStop() : mapStart()));
   document.getElementById('map-restart').addEventListener('click', mapRestart);
   document.getElementById('map-longest').addEventListener('click', mapFlight);
+  document.getElementById('map-export').addEventListener('click', mapExportFile);
+  document.getElementById('map-import').addEventListener('click', mapImportDialog);
   if (typeof L === 'undefined') { document.getElementById('map-status').textContent = 'The map library failed to load.'; return; }
   mapState.view = L.map('map-canvas', { zoomControl: true, worldCopyJump: false }).setView([52.0, 19.5], 6);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap contributors' }).addTo(mapState.view);
@@ -243,5 +247,42 @@ function mapFlight() {
 }
 
 function renderMap() { mapRender(); }
+
+/** Eksport/import sesji mapy (port MapFileStore z M² Android) — plik M2-XXXX-map.json. */
+function mapExportFile() {
+  const selectedName = trackedKeys.find(k => k.key.toLowerCase() === mapState.key.toLowerCase())?.name || 'key';
+  const cleanName = (selectedName || 'key').replace(/[^a-zA-Z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 12);
+  const payload = {
+    key: mapState.key, filter: '', trackingMode: mapState.mode, running: false,
+    startedAt: mapState.events.size ? Date.now() : 0, events: [...mapState.events.values()]
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `M2-${cleanName || 'key'}-map.json`;
+  link.click(); URL.revokeObjectURL(link.href);
+}
+function mapImportFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const parsed = JSON.parse(String(reader.result));
+      const events = Array.isArray(parsed.events) ? parsed.events : [];
+      mapState.key = trackedKeys.some(k => k.key.toLowerCase() === String(parsed.key || '').toLowerCase()) ? parsed.key : (trackedKeys[0]?.key || mapState.key);
+      if (MapCore && MapCore.MODES && MapCore.MODES[parsed.trackingMode]) mapState.mode = parsed.trackingMode;
+      mapState.events.clear();
+      events.forEach(event => mapState.events.set(event.id, event));
+      mapState.running = false; mapState.committed = false; mapState.fitted = false;
+      mapSaveSession(); mapRender();
+    } catch { const status = document.getElementById('map-status'); if (status) status.textContent = 'The selected map file is not valid.'; }
+  };
+  reader.readAsText(file);
+}
+function mapImportDialog() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'application/json,.json';
+  input.addEventListener('change', () => { if (input.files?.[0]) mapImportFile(input.files[0]); });
+  input.click();
+}
 
 mapLoadSession();

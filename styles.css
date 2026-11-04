@@ -246,3 +246,116 @@ button { color: inherit; font: inherit; }
 .guide-desc, .guide-note { margin:0; font-size:12px; line-height:1.5; color:var(--on-surface); }
 .guide-link { color:#2196f3; font-size:13px; text-decoration:none; padding:6px 0; }
 .guide-link:hover { text-decoration:underline; }
+
+/* ===== Map screen (port NetworkMapScreen z M² Android) ===== */
+.map-screen h1 { margin:8px 0 18px; font-size:clamp(28px,4vw,40px); letter-spacing:-.035em; }
+.map-controls { display:flex; flex-wrap:wrap; align-items:flex-end; gap:14px; margin-bottom:14px; }
+.map-controls label { display:flex; flex-direction:column; gap:6px; color:var(--on-surface-variant); font:600 10px "Roboto Mono",Consolas,monospace; letter-spacing:.08em; }
+.map-controls select { min-width:190px; border:1px solid var(--outline); border-radius:10px; padding:10px 12px; color:var(--on-surface); background:var(--surface); }
+.map-buttons { display:flex; gap:8px; margin-left:auto; }
+.map-buttons button { border:1px solid var(--outline); border-radius:10px; padding:10px 14px; background:var(--surface-variant); color:var(--on-surface); font-weight:650; cursor:pointer; }
+.map-buttons .map-start { border-color:#67d78a55; color:var(--primary); }
+.map-buttons .map-stop { border-color:#ff6b6b55; color:var(--error); }
+.map-counters { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; margin-bottom:12px; }
+.map-counters div { padding:12px; border:1px solid var(--outline); border-radius:13px; background:var(--surface); }
+.map-counters span { display:block; color:var(--on-surface-variant); font:600 9px "Roboto Mono",Consolas,monospace; letter-spacing:.09em; }
+.map-counters b { display:block; margin-top:5px; font:700 20px "Roboto Mono",Consolas,monospace; }
+.longest-tile { width:100%; display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 12px; padding:14px 16px; border:1px solid #68f69b40; border-radius:13px; background:radial-gradient(120% 160% at 0% 0%, #1c3a2a 0%, transparent 60%), var(--surface); color:var(--on-surface); text-align:left; cursor:pointer; }
+.longest-tile span { color:var(--on-surface-variant); font:600 10px "Roboto Mono",Consolas,monospace; letter-spacing:.09em; }
+.longest-tile b { font:700 22px "Roboto Mono",Consolas,monospace; color:var(--primary); }
+.longest-tile b.record-km { color:var(--error); }
+.map-status { min-height:22px; margin:0 0 12px; color:var(--on-surface-variant); font:11px "Roboto Mono",Consolas,monospace; }
+#map-canvas { height:min(56dvh,560px); border:1px solid var(--outline); border-radius:16px; overflow:hidden; background:var(--surface); }
+.map-legend { display:flex; flex-wrap:wrap; gap:16px; margin-top:12px; color:var(--on-surface-variant); font:10px "Roboto Mono",Consolas,monospace; }
+.map-legend span { display:flex; align-items:center; gap:6px; }
+.map-legend span::before { content:""; width:16px; height:3px; border-radius:2px; background:var(--c); }
+.m2-tip { border:1px solid var(--outline); border-radius:8px; padding:4px 8px; background:var(--surface-variant); color:var(--on-surface); font:600 10px "Roboto Mono",Consolas,monospace; }
+.m2-badge { border-color:#68f69b66; color:var(--primary); }
+@media (max-width:640px){ .map-counters { grid-template-columns:repeat(2,1fr); } .map-buttons { margin-left:0; width:100%; } .map-buttons button { flex:1; } }
+
+/* ===== Dialogi (Add channel / Rename / Message details / API log / RPT help) ===== */
+.dialog-backdrop { position:fixed; z-index:9; inset:0; display:grid; place-items:center; padding:18px; background:#000a; backdrop-filter:blur(5px); }
+.dialog { width:min(480px,100%); max-height:min(85dvh,720px); overflow:auto; padding:24px; border:1px solid var(--outline); border-radius:20px; background:var(--surface); box-shadow:0 25px 90px #000a; }
+.dialog h3 { margin:0 0 6px; font-size:20px; }
+.dialog-note { margin:10px 0; color:var(--on-surface-variant); line-height:1.55; font-size:14px; }
+.dialog-option { width:100%; display:flex; flex-direction:column; gap:4px; margin:10px 0; padding:14px 16px; border:1px solid var(--outline); border-radius:14px; background:var(--surface-variant); color:var(--on-surface); text-align:left; cursor:pointer; }
+.dialog-option:hover { border-color:var(--primary); }
+.dialog-option b { font-size:15px; }
+.dialog-option span { color:var(--on-surface-variant); font-size:12px; }
+.dialog-field { display:flex; flex-direction:column; gap:6px; margin:14px 0 4px; color:var(--on-surface-variant); font:600 10px "Roboto Mono",Consolas,monospace; letter-spacing:.08em; }
+.dialog-field input,.dialog-field select { border:1px solid var(--outline); border-radius:10px; padding:11px 12px; color:var(--on-surface); background:var(--surface); font:14px "Segoe UI",system-ui,sans-serif; }
+.dialog-input { display:flex; align-items:center; gap:2px; }
+.dialog-input b { color:var(--primary); font:700 18px "Roboto Mono",Consolas,monospace; }
+.dialog-input input { flex:1; min-width:0; border:1px solid var(--outline); border-radius:10px; padding:11px 12px; color:var(--on-surface); background:var(--surface); }
+.dialog-hint { margin:8px 0 0; color:var(--on-surface-variant); font-size:12px; line-height:1.5; }
+.dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:18px; }
+.dialog-confirm { border:1px solid #67d78a55; border-radius:10px; padding:11px 16px; background:#67d78a1a; color:var(--primary); font-weight:700; cursor:pointer; }
+.dialog-cancel { border:1px solid var(--outline); border-radius:10px; padding:11px 16px; background:var(--surface-variant); color:var(--on-surface); cursor:pointer; }
+
+/* ===== Channels: pełny port ===== */
+.channel-view-head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:8px; }
+.channel-view-head > div { display:flex; gap:8px; margin-left:auto; }
+.channel-view-head button { border:1px solid var(--outline); border-radius:9px; padding:9px 12px; background:var(--surface-variant); color:var(--primary); font:600 12px "Segoe UI",system-ui,sans-serif; cursor:pointer; }
+.channel-view-head button:disabled { opacity:.42; cursor:default; }
+.channel-view-head span { width:100%; color:var(--on-surface-variant); font:11px "Roboto Mono",Consolas,monospace; }
+.channel-message { padding:14px 6px; border-top:1px solid var(--outline); cursor:pointer; }
+.channel-message:hover { background:#202725; }
+.channel-message.tracked { border-left:2px solid var(--primary); padding-left:10px; }
+.channel-message b { font-size:14px; }
+.channel-message small { display:block; margin-top:4px; color:var(--on-surface-variant); font:10px "Roboto Mono",Consolas,monospace; }
+.channel-message p { margin:8px 0 0; color:var(--on-surface-variant); line-height:1.5; overflow-wrap:anywhere; }
+.channel-message.tracked p { color:var(--on-surface); }
+.unread-badge { flex:none; min-width:26px; height:20px; display:grid; place-items:center; padding:0 7px; border-radius:999px; background:#3a4146; color:var(--on-surface); font:700 11px "Roboto Mono",Consolas,monospace; }
+.unread-badge.tracked { background:var(--primary); color:var(--on-primary); }
+.add-channel-tile,.stats-tile { width:100%; display:flex; align-items:center; gap:10px; margin-bottom:10px; padding:15px 18px; border:1px solid var(--outline); border-radius:14px; background:var(--surface); color:var(--on-surface); font:650 15px "Segoe UI",system-ui,sans-serif; text-align:left; cursor:pointer; }
+.add-channel-tile:hover,.stats-tile:hover { border-color:var(--primary); color:var(--primary); }
+.stats-tile { border-style:dashed; color:var(--on-surface-variant); }
+.stats-tiles { display:grid; gap:8px; }
+.stats-totals { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:16px 0; }
+.stats-totals div { padding:14px; border:1px solid var(--outline); border-radius:13px; background:var(--surface); text-align:center; }
+.stats-totals b { display:block; font:700 26px "Roboto Mono",Consolas,monospace; color:var(--primary); }
+.stats-totals span { color:var(--on-surface-variant); font:600 9px "Roboto Mono",Consolas,monospace; letter-spacing:.09em; }
+.stats-group { margin-bottom:10px; padding:14px; border:1px solid var(--outline); border-radius:13px; background:var(--surface); }
+.stats-group-head { display:flex; justify-content:space-between; gap:10px; }
+.stats-group-head span { color:var(--on-surface-variant); font:10px "Roboto Mono",Consolas,monospace; }
+.stats-group small { display:block; margin-top:5px; color:var(--on-surface-variant); font:10px "Roboto Mono",Consolas,monospace; }
+.stats-list { margin-top:14px; }
+.danger-link { border:1px solid #ff6b6b55; border-radius:10px; padding:10px 14px; background:#ff6b6b0d; color:var(--error); font-weight:650; cursor:pointer; }
+.back-link { margin-top:18px; border:1px solid var(--outline); border-radius:10px; padding:10px 14px; background:var(--surface-variant); color:var(--on-surface); cursor:pointer; }
+.details-list { margin:14px 0; }
+.details-list div { display:flex; justify-content:space-between; gap:14px; padding:9px 0; border-top:1px solid var(--outline); }
+.details-list dt { color:var(--on-surface-variant); font:600 10px "Roboto Mono",Consolas,monospace; letter-spacing:.06em; }
+.details-list dd { margin:0; text-align:right; overflow-wrap:anywhere; }
+.details-list .mono { font:11px "Roboto Mono",Consolas,monospace; }
+.stats-big { font:700 26px "Roboto Mono",Consolas,monospace; color:var(--primary); }
+.broker-time { margin:6px 0; color:var(--on-surface-variant); font:11px "Roboto Mono",Consolas,monospace; }
+.broker-time b { color:var(--on-surface); }
+
+/* ===== Settings: nagłówki, log API, o aplikacji ===== */
+.settings-heading { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.settings-heading h2 { margin:5px 0 16px; font-size:20px; }
+.settings-heading button { border:1px solid var(--outline); border-radius:9px; padding:8px 12px; background:var(--surface-variant); color:var(--primary); font:650 12px "Segoe UI",system-ui,sans-serif; cursor:pointer; }
+.api-log-list { max-height:min(50dvh,420px); overflow:auto; margin:12px 0; }
+.api-log-row { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:9px 10px; border-top:1px solid var(--outline); font:10px "Roboto Mono",Consolas,monospace; }
+.api-log-row b { min-width:64px; }
+.api-log-row.online b { color:var(--primary); }
+.api-log-row.offline b { color:var(--error); }
+.api-log-row span { color:var(--on-surface-variant); }
+.about-settings { margin-top:28px; }
+.about-settings h2 { margin:5px 0 16px; font-size:20px; }
+.settings-link { display:block; margin:8px 0; color:var(--primary); text-decoration:none; }
+.settings-link:hover { text-decoration:underline; }
+.version-note { margin:14px 0 18px; color:var(--on-surface-variant); font:11px "Roboto Mono",Consolas,monospace; }
+.danger-button { border:1px solid #ff6b6b55; border-radius:10px; padding:11px 16px; background:#ff6b6b0d; color:var(--error); font-weight:700; cursor:pointer; }
+
+/* ===== RPT info: status i pomoc metryk ===== */
+.node-info-grid .status-active b { color:var(--primary); }
+.metric-help { margin-left:6px; border:1px solid var(--outline); border-radius:50%; width:18px; height:18px; display:inline-grid; place-items:center; background:var(--surface-variant); color:var(--on-surface-variant); font:600 11px "Segoe UI",system-ui,sans-serif; cursor:pointer; vertical-align:middle; }
+.metric-help:hover { color:var(--primary); border-color:var(--primary); }
+
+/* ===== Zamknięcie aplikacji ===== */
+#app-closed { position:fixed; z-index:20; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; background:var(--intro-dark); color:var(--on-surface); text-align:center; padding:24px; }
+#app-closed img { width:64px; height:64px; border-radius:16px; margin-bottom:8px; }
+#app-closed h2 { margin:0; font-size:26px; }
+#app-closed p { margin:0 0 18px; color:var(--on-surface-variant); }
+#app-closed button { border:1px solid #67d78a55; border-radius:12px; padding:12px 22px; background:#67d78a1a; color:var(--primary); font-weight:700; cursor:pointer; }

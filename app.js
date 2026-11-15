@@ -275,6 +275,26 @@ function loadChannels() {
 function saveChannels() { try { localStorage.setItem(CHANNEL_STORAGE,JSON.stringify(savedChannels.slice(0,50))); } catch {} }
 
 /** Deszyfracja wiadomości prywatnych kanałów z bieżącego strumienia pakietów (payload_type 5). */
+async function syncChannelSecrets() {
+  let changed = false;
+  for (const channel of savedChannels) {
+    if (channel.name.startsWith('#') && (!channel.secret || !channel.hash)) {
+      const parsed = await M2Channels.parseChannel(channel.name);
+      if (parsed) {
+        channel.secret = parsed.secret;
+        channel.hash = parsed.hash;
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    saveChannels();
+  }
+  await channelsDecryptLive(liveState.packets);
+  if (currentScreen() === 'Live') renderLive();
+  if (currentScreen() === 'Channels') renderChannels();
+}
+
 async function channelsDecryptLive(packets) {
   const keyed=savedChannels.filter(channel=>channel.secret);
   if(!keyed.length)return;
@@ -859,8 +879,10 @@ async function channelAddConfirm() {
   channelUiState.add=false; channelUiState.addMode=null; channelUiState.namedPublic=false; channelUiState.input=''; channelUiState.invalid=false;
   channelStatsRefresh();
   liveState.selectedChannel = channelObj.name;
+  await channelsDecryptLive(liveState.packets);
   if(!channelObj.isPrivate) channelsLoadRemote(channelObj);
   renderChannels();
+  if(currentScreen() === 'Live') renderLive();
 }
 
 function renderChannelMessageDetails() {
@@ -1033,7 +1055,7 @@ tabButtons.forEach(button => button.addEventListener('click', () => {
   try { sessionStorage.setItem(ACTIVE_TAB_STORAGE,name); } catch {}
   renderScreen(name);
 }));
-loadPackets();
+loadPackets().then(() => syncChannelSecrets());
 document.getElementById('refresh-live-top')?.addEventListener('click', () => loadPackets(true));
 setInterval(() => {
   if(appClosed || document.hidden) return;

@@ -9,8 +9,22 @@ const MAP_COLORS = { route: '#42d47b', reply: '#f0a84b', gps: '#ab47bc', longest
 const mapState = {
   key: '', mode: 'ALL_FOR_SELECTED_KEY', running: false, committed: false, events: new Map(),
   directory: [], located: [], directorySource: '', directoryError: '',
-  view: null, layer: null, flightLayer: null, flightFrame: 0, fitted: false
+  view: null, layer: null, flightLayer: null, flightFrame: 0, fitted: false,
+  baselineCounts: new Map(), processedCounts: new Map()
 };
+
+function mapSnapshotBaseline() {
+  mapState.baselineCounts = new Map();
+  mapState.processedCounts = new Map();
+  if (Array.isArray(liveState.packets)) {
+    liveState.packets.forEach(packet => {
+      const ident = packetIdentity(packet);
+      const count = Number(packet.observation_count || 1);
+      mapState.baselineCounts.set(ident, count);
+      mapState.processedCounts.set(ident, count);
+    });
+  }
+}
 
 function mapLoadSession() {
   try {
@@ -18,13 +32,18 @@ function mapLoadSession() {
     if (!s) return;
     mapState.key = String(s.key || ''); mapState.mode = MapCore.MODES[s.mode] ? s.mode : 'ALL_FOR_SELECTED_KEY';
     mapState.running = !!s.running; mapState.committed = !!s.committed;
+    mapState.baselineCounts = new Map(Array.isArray(s.baseline) ? s.baseline : []);
+    mapState.processedCounts = new Map(Array.isArray(s.processed) ? s.processed : []);
     (Array.isArray(s.events) ? s.events : []).forEach(e => mapState.events.set(e.id, e));
   } catch {}
 }
 function mapSaveSession() {
   try {
     sessionStorage.setItem(MAP_SESSION_STORAGE, JSON.stringify({
-      key: mapState.key, mode: mapState.mode, running: mapState.running, committed: mapState.committed, events: [...mapState.events.values()]
+      key: mapState.key, mode: mapState.mode, running: mapState.running, committed: mapState.committed,
+      baseline: mapState.baselineCounts ? [...mapState.baselineCounts.entries()] : [],
+      processed: mapState.processedCounts ? [...mapState.processedCounts.entries()] : [],
+      events: [...mapState.events.values()]
     }));
   } catch {}
 }
@@ -62,15 +81,24 @@ function mapIngest() {
   if (!mapState.running || !mapState.key) return;
   let added = false;
   liveState.packets.forEach(packet => {
+    const ident = packetIdentity(packet);
+    const count = Number(packet.observation_count || 1);
+    const baseCount = mapState.baselineCounts ? (mapState.baselineCounts.get(ident) || 0) : 0;
+    const procCount = mapState.processedCounts ? (mapState.processedCounts.get(ident) || 0) : 0;
+    const isNew = !mapState.baselineCounts || !mapState.baselineCounts.has(ident) || count > baseCount;
+    if (!isNew || procCount >= count) return;
+
     mapRoutesForPacket(packet).forEach(route => {
-      // _parsedPath nadpisujemy, bo packetPath() preferuje go przed path_json
       const matches = relationMatches({ ...packet, _parsedPath: route.path, path_json: JSON.stringify(route.path), resolved_path: route.resolved, observer_id: route.observerId });
       const event = MapCore.routeEvent({
-        id: packetIdentity(packet), hash: packet.hash, payloadType: packet.payload_type,
+        id: ident, hash: packet.hash, payloadType: packet.payload_type,
         timestamp: packet.timestamp || packet.first_seen, route, matches, key: mapState.key, mode: mapState.mode
       });
       if (event && !mapState.events.has(event.id)) { mapState.events.set(event.id, event); added = true; }
     });
+    if (mapState.processedCounts) {
+      mapState.processedCounts.set(ident, count);
+    }
   });
   if (mapState.events.size > MAP_MAX_EVENTS) {
     [...mapState.events.keys()].slice(0, mapState.events.size - MAP_MAX_EVENTS).forEach(id => mapState.events.delete(id));
@@ -109,7 +137,12 @@ const mapKm = value => `${Number(value || 0).toFixed(2)} km`;
 
 function mapStart() {
   if (!mapState.key || mapState.running) return;
-  if (mapState.committed) { mapState.events.clear(); mapState.committed = false; mapState.fitted = false; }
+  if (mapState.committed) {
+    mapState.events.clear(); mapState.committed = false; mapState.fitted = false;
+    mapSnapshotBaseline();
+  } else if (!mapState.baselineCounts || mapState.baselineCounts.size === 0) {
+    mapSnapshotBaseline();
+  }
   mapState.running = true; mapSaveSession();
   mapIngest(); mapRender(); mapEnsureDirectory().then(() => currentScreen() === 'Map' && updateMapView());
 }
@@ -122,6 +155,7 @@ function mapStop() {
 }
 function mapRestart() {
   mapState.events.clear(); mapState.running = false; mapState.committed = false; mapState.fitted = false;
+  mapSnapshotBaseline();
   mapSaveSession(); mapRender();
 }
 

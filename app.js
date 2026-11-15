@@ -111,7 +111,8 @@ function pathSummary(packet) {
 }
 function keyName(key) { return trackedKeys.find(item=>item.key.toLowerCase()===String(key||'').toLowerCase())?.name || `${String(key||'').slice(0,4).toUpperCase()}…`; }
 function reliableHash(value) { const text=String(value||'').trim();return text.length>=4&&text.length<=64&&text.length%2===0&&/^[a-f\d]+$/i.test(text); }
-function uniqueKeyForHash(hash) { if(!reliableHash(hash))return null;const found=trackedKeys.filter(item=>item.key.toLowerCase().startsWith(String(hash).toLowerCase()));return found.length===1?found[0]:null; }
+function isHexHash(value) { const text=String(value||'').trim();return text.length>=2&&text.length<=64&&text.length%2===0&&/^[a-f\d]+$/i.test(text); }
+function uniqueKeyForHash(hash) { if(!isHexHash(hash))return null;const found=trackedKeys.filter(item=>item.key.toLowerCase().startsWith(String(hash).toLowerCase()));return found.length===1?found[0]:null; }
 function exactTrackedKey(value) { const text=String(value||'').trim().toLowerCase();return /^[a-f\d]{64}$/i.test(text)?trackedKeys.find(item=>item.key.toLowerCase()===text)||null:null; }
 function uniqueNamedKeys(...names) { const normalized=names.map(name=>String(name||'').trim().toLowerCase()).filter(Boolean);const found=trackedKeys.filter(item=>item.name&&normalized.includes(item.name.trim().toLowerCase()));return found.length===1?found:[]; }
 function mentionedTrackedKeys(text) { const message=String(text||'').toLowerCase();return trackedKeys.filter(item=>[item.name,item.key.slice(0,4)].some(raw=>{const value=String(raw||'').trim().toLowerCase();if(!value)return false;const escaped=value.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');return new RegExp(`(?<![\\p{L}\\p{N}_])@(?:\\[${escaped}\\]|${escaped})(?![\\p{L}\\p{N}_])`,'u').test(message);})); }
@@ -260,7 +261,7 @@ async function channelsDecryptLive(packets) {
   if(!keyed.length)return;
   let changed=false;
   for(const packet of (Array.isArray(packets)?packets:[])) {
-    if(Number(packet.payload_type)!==5)continue;
+    if(Number(packet.payload_type)!==5 && Number(packet.payload_type)!==6)continue;
     const decoded=parseDecoded(packet);
     const channelHashHex=String(decoded.channelHashHex||'');
     const encrypted=String(decoded.encryptedData||''), mac=String(decoded.mac||'');
@@ -816,16 +817,26 @@ function renderChannelAddDialog() {
 }
 
 async function channelAddConfirm() {
-  const value=channelUiState.addMode==='private'?channelUiState.input.trim():`#${channelUiState.input.trim().replace(/^#/,'')}`;
-  const parsed=await M2Channels.parseChannel(value);
+  const nameEl = document.getElementById('channel-name-input');
+  const keyEl = document.getElementById('channel-key-input');
+  const rawInput = (channelUiState.addMode==='private' ? keyEl?.value : nameEl?.value) ?? channelUiState.input ?? '';
+  const trimmed = String(rawInput).trim();
+  const value = channelUiState.addMode==='private' ? trimmed : ('#' + trimmed.replace(/^#/, ''));
+  const parsed = await M2Channels.parseChannel(value);
   if(!parsed){ channelUiState.invalid=true; renderChannels(); return; }
-  if(!savedChannels.some(item=>(item.secret||item.name)===value||item.name===parsed.name&&item.secret===parsed.secret)){
-    savedChannels.unshift({ ...parsed, lastReadAt:0, clearedAt:0, messages:[], loading:false, error:'' });
-    if(savedChannels.length>50)savedChannels.length=50;
+  const existing = savedChannels.find(item=>(item.secret||item.name)===value||item.name===parsed.name&&item.secret===parsed.secret);
+  let channelObj = existing;
+  if(!existing){
+    channelObj = { ...parsed, lastReadAt:0, clearedAt:0, messages:[], loading:false, error:'', loaded:false };
+    savedChannels.unshift(channelObj);
+    if(savedChannels.length>50) savedChannels.length=50;
     saveChannels();
   }
   channelUiState.add=false; channelUiState.addMode=null; channelUiState.namedPublic=false; channelUiState.input=''; channelUiState.invalid=false;
-  channelStatsRefresh(); renderChannels();
+  channelStatsRefresh();
+  liveState.selectedChannel = channelObj.name;
+  if(!channelObj.isPrivate) channelsLoadRemote(channelObj);
+  renderChannels();
 }
 
 function renderChannelMessageDetails() {
@@ -902,7 +913,7 @@ async function renderChannels() {
   if(channelUiState.statistics){ renderChannelsStats(); return; }
   const selected=liveState.selectedChannel;
   const channel=selected?channelByIdentity(selected):null;
-  if(channel&&!channel.isPrivate&&!(Array.isArray(channel.messages)&&channel.messages.length)&&!channel.loading){ channelsLoadRemote(channel); return; }
+  if(channel&&!channel.isPrivate&&!channel.loaded&&!channel.loading){ channel.loaded=true; channelsLoadRemote(channel); }
   if(channel){ channel.lastReadAt=Date.now(); saveChannels(); }
   const trackedNames=trackedNamesLower();
   const orderedChannels=[...savedChannels].sort((a,b)=>{

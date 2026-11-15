@@ -300,7 +300,7 @@ async function channelsDecryptLive(packets) {
     const encrypted=String(decoded.encryptedData||''), mac=String(decoded.mac||'');
     if(!channelHashHex||!encrypted||!mac)continue;
     for(const channel of keyed) {
-        if(String(channel.hash).toLowerCase()!==channelHashHex.toLowerCase())continue;
+
         if(!(await M2Channels.validMac(channel.secret,mac,encrypted))){
           showToast(`Invalid MAC for channel ${channel.name}`);
           continue;

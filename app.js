@@ -32,6 +32,43 @@ const labels = {0:'REQUEST',1:'RESPONSE',2:'DIRECT MSG',3:'ACK',4:'ADVERT',5:'CH
 const trackedRelations = { source:'SOURCE', end:'LAST RECORDED HOP', route:'IN ROUTE', observer:'REPORTED BY', reply:'REPLY TO' };
 
 function safeText(value, fallback = '—') { return value == null || value === '' ? fallback : String(value); }
+
+function showToast(message) {
+  // Simple toast notification – appears for a few seconds.
+  const existing = document.getElementById('agy-toast-style');
+  if (!existing) {
+    const style = document.createElement('style');
+    style.id = 'agy-toast-style';
+    style.textContent = `
+      .agy-toast {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        background: rgba(0,0,0,0.8);
+        color: #fff;
+        padding: 10px 15px;
+        border-radius: 4px;
+        font-family: sans-serif;
+        font-size: 14px;
+        z-index: 10000;
+        opacity: 0;
+        transition: opacity 0.3s ease-in-out;
+      }
+      .agy-toast.show { opacity: 1; }
+    `;
+    document.head.appendChild(style);
+  }
+  const toast = document.createElement('div');
+  toast.className = 'agy-toast';
+  toast.textContent = message;
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => toast.classList.add('show'));
+  setTimeout(() => {
+    toast.classList.remove('show');
+    setTimeout(() => toast.remove(), 300);
+  }, 4000);
+}
+
 function parseDecoded(packet) {
   if (packet._decoded && typeof packet._decoded === 'object') return packet._decoded;
   try { packet._decoded = typeof packet.decoded_json === 'string' ? JSON.parse(packet.decoded_json) : (packet.decoded_json || {}); }
@@ -263,6 +300,16 @@ async function channelsDecryptLive(packets) {
     const encrypted=String(decoded.encryptedData||''), mac=String(decoded.mac||'');
     if(!channelHashHex||!encrypted||!mac)continue;
     for(const channel of keyed) {
+        if(String(channel.hash).toLowerCase()!==channelHashHex.toLowerCase())continue;
+        if(!(await M2Channels.validMac(channel.secret,mac,encrypted))){
+          showToast(`Invalid MAC for channel ${channel.name}`);
+          continue;
+        }
+        const message=await M2Channels.decryptMessage(channel.secret,encrypted);
+        if(!message){
+          showToast(`Failed to decrypt message for channel ${channel.name}`);
+          continue;
+        }
       if(String(channel.hash).toLowerCase()!==channelHashHex.toLowerCase())continue;
       if(!(await M2Channels.validMac(channel.secret,mac,encrypted)))continue;
       const message=await M2Channels.decryptMessage(channel.secret,encrypted);

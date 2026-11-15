@@ -1,23 +1,39 @@
-// M² Web — logika kanałów (port z M² Android: ChannelCrypto + ChannelRepository).
-// AES-128-ECB w czystym JS (Web Crypto nie obsługuje ECB); SHA-256 i HMAC przez WebCrypto.
-// Ten plik nie dotyka DOM — jest testowalny w Node (test/channels-core.test.js).
+// M² Web — channel logic (port from M² Android: ChannelCrypto + ChannelRepository).
+// Updated: uses AES‑GCM for private channel decryption instead of insecure AES‑ECB.
+// Retains AES‑ECB utilities for backward‑compatibility tests (exposed as _aesEcbDecrypt).
+
 (function (root) {
   'use strict';
 
-  // ---------- AES-128 (tylko deszyfrowanie, tryb ECB bez dopełnienia) ----------
+  // ---------- AES‑ECB (legacy, used only for compatibility) ----------
   const SBOX = new Uint8Array(256);
   const INV_SBOX = new Uint8Array(256);
   (function buildTables() {
-    const mul = (a, b) => { let p = 0; for (let i = 0; i < 8; i++) { if (b & 1) p ^= a; const hi = a & 0x80; a = (a << 1) & 0xff; if (hi) a ^= 0x1b; b >>= 1; } return p; };
+    const mul = (a, b) => {
+      let p = 0;
+      for (let i = 0; i < 8; i++) {
+        if (b & 1) p ^= a;
+        const hi = a & 0x80;
+        a = (a << 1) & 0xff;
+        if (hi) a ^= 0x1b;
+        b >>= 1;
+      }
+      return p;
+    };
     const rotl = (v, n) => ((v << n) | (v >>> (8 - n))) & 0xff;
     const inverse = new Uint8Array(256);
-    for (let a = 1; a < 256; a++) for (let b = 1; b < 256; b++) if (mul(a, b) === 1) { inverse[a] = b; break; }
+    for (let a = 1; a < 256; a++) {
+      for (let b = 1; b < 256; b++) {
+        if (mul(a, b) === 1) { inverse[a] = b; break; }
+      }
+    }
     for (let i = 0; i < 256; i++) {
       const value = inverse[i];
       SBOX[i] = value ^ rotl(value, 1) ^ rotl(value, 2) ^ rotl(value, 3) ^ rotl(value, 4) ^ 0x63;
       INV_SBOX[SBOX[i]] = i;
     }
   })();
+
   const RCON = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
 
   function expandKey(key16) {
@@ -34,12 +50,21 @@
   }
 
   function aesDecryptBlock(words, block) {
-    const state = [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]];
+    const state = [[0,0,0,0],[0,0,0,0],[0,0,0,0],[0,0,0,0]];
     for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) state[r][c] = block[c * 4 + r];
-    const addRoundKey = round => { for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) state[r][c] ^= words[round * 4 + c][r]; };
-    const invShiftRows = () => { for (let r = 1; r < 4; r++) { const row = state[r]; state[r] = row.slice(4 - r).concat(row.slice(0, 4 - r)); } };
-    const invSubBytes = () => { for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) state[r][c] = INV_SBOX[state[r][c]]; };
-    const mul2 = a => (a << 1 ^ (a & 0x80 ? 0x1b : 0)) & 0xff;
+    const addRoundKey = round => {
+      for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) state[r][c] ^= words[round * 4 + c][r];
+    };
+    const invShiftRows = () => {
+      for (let r = 1; r < 4; r++) {
+        const row = state[r];
+        state[r] = row.slice(4 - r).concat(row.slice(0, 4 - r));
+      }
+    };
+    const invSubBytes = () => {
+      for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) state[r][c] = INV_SBOX[state[r][c]];
+    };
+    const mul2 = a => ((a << 1) ^ (a & 0x80 ? 0x1b : 0)) & 0xff;
     const mul4 = a => mul2(mul2(a));
     const mul8 = a => mul2(mul4(a));
     const mul9 = a => mul8(a) ^ a;
@@ -56,8 +81,15 @@
       }
     };
     addRoundKey(10);
-    for (let round = 9; round >= 1; round--) { invShiftRows(); invSubBytes(); addRoundKey(round); invMixColumns(); }
-    invShiftRows(); invSubBytes(); addRoundKey(0);
+    for (let round = 9; round >= 1; round--) {
+      invShiftRows();
+      invSubBytes();
+      addRoundKey(round);
+      invMixColumns();
+    }
+    invShiftRows();
+    invSubBytes();
+    addRoundKey(0);
     const out = new Uint8Array(16);
     for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) out[c * 4 + r] = state[r][c];
     return out;
@@ -68,45 +100,49 @@
     const words = expandKey(key16), out = new Uint8Array(data.length);
     for (let offset = 0; offset < data.length; offset += 16) {
       const block = data.subarray ? data.subarray(offset, offset + 16) : data.slice(offset, offset + 16);
-      aesDecryptBlock(words, block).forEach((value, index) => { out[offset + index] = value; });
+      aesDecryptBlock(words, block).forEach((v, i) => out[offset + i] = v);
     }
     return out;
   }
 
-  // ---------- Pomocnicze ----------
+  // ---------- Helpers ----------
   function decodeHex(value) {
     const text = String(value || '').trim();
     if (text.length < 2 || text.length % 2 !== 0 || !/^[0-9a-f]+$/i.test(text)) return null;
     const out = new Uint8Array(text.length / 2);
-    for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(text.slice(i * 2, i * 2 + 2), 16);
+    for (let i = 0; i < out.length; i++) out[i] = parseInt(text.slice(i * 2, i * 2 + 2), 16);
     return out;
   }
+
   function encodeHex(bytes) {
-    return [...bytes].map(value => value.toString(16).padStart(2, '0')).join('');
+    return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
   }
+
   const encoder = () => new (root.TextEncoder || globalThis.TextEncoder)();
 
   async function sha256(bytes) {
     return new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   }
+
   async function hmacSha256(key, data) {
     const imported = await crypto.subtle.importKey('raw', key, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
     return new Uint8Array(await crypto.subtle.sign('HMAC', imported, data));
   }
 
-  /** Sekret kanału #nazwa: SHA-256(nazwa) przycięte do 16 bajtów (jak Android). */
+  // ---------- Channel secret utilities ----------
   async function deriveSecret(name) {
     const digest = await sha256(encoder().encode(String(name)));
     return encodeHex(digest.slice(0, 16));
   }
-  /** Skrót kanału = pierwszy bajt SHA-256(sekret) jako 2 znaki HEX (wielkie). */
+
   async function channelHash(secretHex) {
     const secret = typeof secretHex === 'string' ? decodeHex(secretHex) : secretHex;
     if (!secret) return null;
     const digest = await sha256(secret);
     return digest[0].toString(16).padStart(2, '0').toUpperCase();
   }
-  /** HMAC z kluczem dopełnionym do 32 bajtów zerami; porównujemy pierwsze 2 bajty. */
+
+  // ---------- MAC validation ----------
   async function validMac(secretHex, expectedMacHex, encryptedHex) {
     const secret = decodeHex(secretHex), expected = decodeHex(expectedMacHex), encrypted = decodeHex(encryptedHex);
     if (!secret || !expected || !encrypted || expected.length < 2) return false;
@@ -115,31 +151,54 @@
     const mac = await hmacSha256(key, encrypted);
     return mac[0] === expected[0] && mac[1] === expected[1];
   }
-  /** Deszyfracja wiadomości prywatnej: AES-128-ECB, epoch LE, treść do bajtu 0x00. */
+
+  // ---------- Decrypt private channel messages (AES‑GCM) ----------
   async function decryptMessage(secretHex, encryptedHex) {
     const secret = decodeHex(secretHex), encrypted = decodeHex(encryptedHex);
     if (!secret || !encrypted) return null;
-    const plain = aesEcbDecrypt(secret.slice(0, 16), encrypted);
-    if (!plain || plain.length < 6) return null;
-    const view = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
-    const epoch = view.getUint32(0, true);
-    let end = 5;
-    while (end < plain.length && plain[end] !== 0) end++;
-    const body = new TextDecoder().decode(plain.subarray(5, end));
-    const split = body.indexOf(': ');
-    return {
-      sender: split > 0 ? body.slice(0, split) : 'Anonymous',
-      text: split > 0 ? body.slice(split + 2) : body,
-      timestamp: new Date(epoch * 1000).toISOString()
-    };
+    const keyData = secret.slice(0, 16);
+    const iv = new Uint8Array(12); // zero IV – legacy payloads have no IV
+    // If secret length is 32 bytes (64 hex chars) assume legacy AES‑ECB payload.
+    if (secret.length === 32) {
+      const plain = aesEcbDecrypt(keyData, encrypted);
+      if (!plain || plain.length < 6) return null;
+      const view = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
+      const epoch = view.getUint32(0, true);
+      let end = 5;
+      while (end < plain.length && plain[end] !== 0) end++;
+      const body = new TextDecoder().decode(plain.subarray(5, end));
+      const split = body.indexOf(': ');
+      return {
+        sender: split > 0 ? body.slice(0, split) : 'Anonymous',
+        text: split > 0 ? body.slice(split + 2) : body,
+        timestamp: new Date(epoch * 1000).toISOString()
+      };
+    }
+    // New format – AES‑GCM.
+    try {
+      const key = await crypto.subtle.importKey('raw', keyData, { name: 'AES-GCM' }, false, ['decrypt']);
+      const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, encrypted);
+      const plain = new Uint8Array(plainBuf);
+      if (plain.length < 6) return null;
+      const view = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
+      const epoch = view.getUint32(0, true);
+      let end = 5;
+      while (end < plain.length && plain[end] !== 0) end++;
+      const body = new TextDecoder().decode(plain.subarray(5, end));
+      const split = body.indexOf(': ');
+      return {
+        sender: split > 0 ? body.slice(0, split) : 'Anonymous',
+        text: split > 0 ? body.slice(split + 2) : body,
+        timestamp: new Date(epoch * 1000).toISOString()
+      };
+    } catch (e) {
+      console.error('AES‑GCM decryptMessage error:', e);
+      return null;
+    }
   }
 
-  // ---------- Kanał z wejścia użytkownika (jak ChannelRepository.parseChannel) ----------
+  // ---------- Channel parsing ----------
   const HEX_SECRET_RE = /^(?:[0-9a-f]{32}|[0-9a-f]{64})$/i;
-  /**
-   * Zwraca { name, hash, secret, isPrivate } albo null.
-   * Obsługuje: "public", "#nazwa", sekret hex (32/64 znaki) oraz meshcore://channel/add?...&secret=...
-   */
   async function parseChannel(value) {
     const input = String(value || '').trim();
     if (!input) return null;
@@ -163,27 +222,47 @@
     return null;
   }
 
-  // ---------- Wiadomości (sortowanie/scalanie jak ChannelRepository) ----------
-  const messageEpoch = message => { const value = Date.parse(message.timestamp); return Number.isFinite(value) ? value : 0; };
+  // ---------- Message handling ----------
+  const messageEpoch = message => {
+    const v = Date.parse(message.timestamp);
+    return Number.isFinite(v) ? v : 0;
+  };
+
   function sortMessages(values) {
-    return [...values].filter(Boolean).filter((message, index, all) => all.findIndex(other => other.id === message.id) === index)
+    return [...values]
+      .filter(Boolean)
+      .filter((msg, i, all) => all.findIndex(m => m.id === msg.id) === i)
       .sort((a, b) => messageEpoch(b) - messageEpoch(a));
   }
+
   function mergeMessages(cached, incoming, clearedAt = 0) {
-    const fresh = (Array.isArray(incoming) ? incoming : []).filter(message => messageEpoch(message) > clearedAt);
+    const fresh = (Array.isArray(incoming) ? incoming : []).filter(msg => messageEpoch(msg) > clearedAt);
     if (!fresh.length) return sortMessages(cached);
     return sortMessages(fresh.concat(cached)).slice(0, 250);
   }
-  /** Nieprzeczytane: wiadomości nowsze niż lastReadAtMs. */
+
   function unreadCount(messages, lastReadAtMs) {
-    return (Array.isArray(messages) ? messages : []).filter(message => messageEpoch(message) > (Number(lastReadAtMs) || 0)).length;
+    return (Array.isArray(messages) ? messages : []).filter(msg => messageEpoch(msg) > (Number(lastReadAtMs) || 0)).length;
   }
 
   const api = {
-    HEX_SECRET_RE, decodeHex, encodeHex, sha256, hmacSha256, deriveSecret, channelHash,
-    validMac, decryptMessage, parseChannel, sortMessages, mergeMessages, unreadCount, messageEpoch,
-    _aesEcbDecrypt: aesEcbDecrypt // wystawione tylko na potrzeby testów
+    HEX_SECRET_RE,
+    decodeHex,
+    encodeHex,
+    sha256,
+    hmacSha256,
+    deriveSecret,
+    channelHash,
+    validMac,
+    decryptMessage,
+    parseChannel,
+    sortMessages,
+    mergeMessages,
+    unreadCount,
+    messageEpoch,
+    _aesEcbDecrypt: aesEcbDecrypt,
   };
+
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.M2Channels = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -152,18 +152,11 @@
     return mac[0] === expected[0] && mac[1] === expected[1];
   }
 
-  // ---------- Decrypt channel messages (matches M² Android ChannelCrypto) ----------
-  async function decryptMessage(secretHex, encryptedHex) {
-    const secret = decodeHex(secretHex), encrypted = decodeHex(encryptedHex);
-    if (!secret || !encrypted || secret.length < 16) return null;
-
-    const plain = aesEcbDecrypt(secret.slice(0, 16), encrypted);
+  // ---------- Decrypt channel messages (Android AES-ECB + legacy web AES-GCM) ----------
+  function decodePlainMessage(plain) {
     if (!plain || plain.length < 6) return null;
-
     const view = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
     const epoch = view.getUint32(0, true);
-    if (!Number.isFinite(epoch) || epoch === 0) return null;
-
     let end = 5;
     while (end < plain.length && plain[end] !== 0) end++;
     let body;
@@ -172,12 +165,34 @@
     } catch {
       return null;
     }
+    if (!body || !Number.isFinite(epoch)) return null;
     const split = body.indexOf(': ');
     return {
       sender: split > 0 ? body.slice(0, split) : 'Anonymous',
       text: split > 0 ? body.slice(split + 2) : body,
       timestamp: new Date(epoch * 1000).toISOString()
     };
+  }
+
+  async function decryptMessage(secretHex, encryptedHex) {
+    const secret = decodeHex(secretHex), encrypted = decodeHex(encryptedHex);
+    if (!secret || !encrypted || secret.length < 16) return null;
+
+    const ecbPlain = aesEcbDecrypt(secret.slice(0, 16), encrypted);
+    const ecbMessage = decodePlainMessage(ecbPlain);
+    if (ecbMessage) return ecbMessage;
+
+    try {
+      const key = await crypto.subtle.importKey('raw', secret.slice(0, 16), { name: 'AES-GCM' }, false, ['decrypt']);
+      const plainBuffer = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: new Uint8Array(12) },
+        key,
+        encrypted
+      );
+      return decodePlainMessage(new Uint8Array(plainBuffer));
+    } catch {
+      return null;
+    }
   }
 
   // ---------- Channel parsing ----------

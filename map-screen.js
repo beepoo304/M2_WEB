@@ -92,7 +92,8 @@ function mapIngest() {
       const matches = relationMatches({ ...packet, _parsedPath: route.path, path_json: JSON.stringify(route.path), resolved_path: route.resolved, observer_id: route.observerId });
       const event = MapCore.routeEvent({
         id: ident, hash: packet.hash, payloadType: packet.payload_type,
-        timestamp: packet.timestamp || packet.first_seen, route, matches, key: mapState.key, mode: mapState.mode
+        timestamp: packet.timestamp || packet.first_seen, route, matches, key: mapState.key, mode: mapState.mode,
+        channel: parseDecoded(packet).channel || '', channelHash: parseDecoded(packet).channelHashHex || ''
       });
       if (event && !mapState.events.has(event.id)) { mapState.events.set(event.id, event); added = true; }
     });
@@ -131,7 +132,8 @@ function mapMetrics() {
   const metrics = MapCore.metrics(events, mapState.located, mapState.directory);
   const maxHops = events.reduce((max, e) => Math.max(max, e.path.length - 1), 0);
   const packets = new Set(events.map(e => e.id)).size;
-  return { ...metrics, packets, routes: events.length, maxHops, edges: MapCore.edges(events, mapState.located, mapState.directory) };
+  const channelPackets = new Set(events.filter(event => event.channel || event.channelHash).map(event => event.packetId)).size;
+  return { ...metrics, packets, routes: events.length, maxHops, channelPackets, edges: MapCore.edges(events, mapState.located, mapState.directory) };
 }
 
 const mapKm = value => `${Number(value || 0).toFixed(2)} km`;
@@ -189,7 +191,7 @@ function mapRender() {
     </div>
     <div class="map-counters">
       <div><span>Packets</span><b id="map-packets">0</b></div><div><span>Routes</span><b id="map-routes">0</b></div><div><span>Links</span><b id="map-links">0</b></div>
-      <div><span>MAX HOPS</span><b id="map-hops">0</b></div><div><span>Distance</span><b id="map-distance">0.00 km</b></div>
+      <div><span>MAX HOPS</span><b id="map-hops">0</b></div><div><span>Channel packets</span><b id="map-channel-packets">0</b></div><div><span>Distance</span><b id="map-distance">0.00 km</b></div>
     </div>
     <button type="button" id="map-longest" class="longest-tile"><span>Longest route</span><b id="map-longest-km">0.00 km</b></button>
     <p id="map-status" class="map-status" role="status" aria-live="polite"></p>
@@ -219,7 +221,7 @@ function updateMapView() {
   if (currentScreen() !== 'Map' || !mapState.layer) return;
   const m = mapMetrics();
   const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
-  set('map-packets', m.packets); set('map-routes', m.routes); set('map-links', m.uniqueLinks); set('map-hops', m.maxHops);
+  set('map-packets', m.packets); set('map-routes', m.routes); set('map-links', m.uniqueLinks); set('map-hops', m.maxHops); set('map-channel-packets', m.channelPackets);
   set('map-distance', mapKm(m.totalUniqueKm)); set('map-longest-km', mapKm(m.longestRouteKm));
   document.getElementById('map-longest-km')?.classList.toggle('record-km', mapRecordPending(mapState.key));
   const status = document.getElementById('map-status');

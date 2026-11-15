@@ -65,3 +65,24 @@ test('messages are merged, deduplicated and capped', () => {
   assert.deepEqual(merged.map(m => m.id), ['c', 'a', 'b']);
   assert.equal(M2Channels.unreadCount(merged, Date.parse('2026-01-01T09:30:00Z')), 2);
 });
+
+test('named channel messages use Android-compatible AES-ECB with a 16-byte secret', async () => {
+  const secretHex = await M2Channels.deriveSecret('#test');
+  const secret = Buffer.from(secretHex, 'hex');
+  const epoch = 1700000000;
+  const plain = Buffer.concat([
+    Buffer.from([epoch & 255, (epoch >>> 8) & 255, (epoch >>> 16) & 255, (epoch >>> 24) & 255, 0]),
+    Buffer.from('Alice: #test message', 'utf8')
+  ]);
+  const padded = Buffer.alloc(Math.ceil(plain.length / 16) * 16);
+  plain.copy(padded);
+  const cipher = nodeCrypto.createCipheriv('aes-128-ecb', secret, null);
+  cipher.setAutoPadding(false);
+  const encrypted = Buffer.concat([cipher.update(padded), cipher.final()]);
+  const decoded = await M2Channels.decryptMessage(secretHex, encrypted.toString('hex'));
+
+  assert.ok(decoded);
+  assert.equal(decoded.sender, 'Alice');
+  assert.equal(decoded.text, '#test message');
+  assert.equal(Math.round(new Date(decoded.timestamp).getTime() / 1000), epoch);
+});

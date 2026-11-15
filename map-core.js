@@ -199,7 +199,8 @@
     return {
       id: `${input.id}|${path.join('>')}|${observer.toLowerCase()}`,
       packetId: input.id, hash: input.hash, payloadType: input.payloadType, timestamp: input.timestamp,
-      path, resolvedPath: resolved, longestRouteEligible: !reply, replyToSelected: reply
+      path, resolvedPath: resolved, longestRouteEligible: !reply, replyToSelected: reply,
+      channel: String(input.channel || ''), channelHash: String(input.channelHash || '')
     };
   }
 

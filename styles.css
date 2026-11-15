@@ -92,6 +92,8 @@ button { color: inherit; font: inherit; }
 .packet-row.packet-own { --packet-accent:var(--primary); }
 .packet-row.packet-one-byte { --packet-accent:#f0a84b; }
 .packet-row .packet-time b,.packet-row .packet-type,.packet-row .packet-copy strong { color:var(--packet-accent); }
+.packet-flags { display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
+.packet-flags b { padding:2px 5px; border:1px solid var(--outline); border-radius:5px; color:var(--on-surface-variant); font:600 9px "Roboto Mono",Consolas,monospace; }
 .packet-copy strong .companion-role { color:#59a9ff; }
 .packet-row.packet-own { background:#67d78a08; }
 .packet-row.packet-own:hover { background:#67d78a12; }
@@ -256,7 +258,7 @@ button { color: inherit; font: inherit; }
 .map-buttons button { border:1px solid var(--outline); border-radius:10px; padding:10px 14px; background:var(--surface-variant); color:var(--on-surface); font-weight:650; cursor:pointer; }
 .map-buttons .map-start { border-color:#67d78a55; color:var(--primary); }
 .map-buttons .map-stop { border-color:#ff6b6b55; color:var(--error); }
-.map-counters { display:grid; grid-template-columns:repeat(5,1fr); gap:10px; margin-bottom:12px; }
+.map-counters { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:12px; }
 .map-counters div { padding:12px; border:1px solid var(--outline); border-radius:13px; background:var(--surface); }
 .map-counters span { display:block; color:var(--on-surface-variant); font:600 9px "Roboto Mono",Consolas,monospace; letter-spacing:.09em; }
 .map-counters b { display:block; margin-top:5px; font:700 20px "Roboto Mono",Consolas,monospace; }

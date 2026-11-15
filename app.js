@@ -64,6 +64,25 @@ function packetSummary(packet) {
   if (type === 11) return 'Control packet';
   return `${packet.raw_hex ? packet.raw_hex.length / 2 : 0} B`;
 }
+function packetFlagsMarkup(packet) {
+  const decoded = parseDecoded(packet);
+  const entries = [];
+  const add = (label, value) => {
+    if (value == null || value === false || value === '') return;
+    const text = typeof value === 'boolean' ? label : `${label}: ${String(value)}`;
+    if (!entries.includes(text)) entries.push(text);
+  };
+  const flags = decoded.flags ?? packet.flags;
+  if (Array.isArray(flags)) flags.forEach(flag => add(String(flag).toUpperCase(), true));
+  else if (flags && typeof flags === 'object') {
+    Object.entries(flags).forEach(([name, value]) => add(name.replace(/([A-Z])/g, ' $1').toUpperCase(), value));
+  }
+  add('ROUTE TYPE', packet.route_type ?? decoded.route_type ?? decoded.routeType);
+  add('PAYLOAD VERSION', packet.payload_version ?? decoded.payload_version ?? decoded.payloadVersion);
+  add('DIRECTION', packet.direction);
+  if (!entries.length) return '';
+  return `<span class="packet-flags">${entries.map(flag => `<b>${escapeHtml(flag)}</b>`).join('')}</span>`;
+}
 function liveIdentityLabel(packet) {
   const decoded=parseDecoded(packet), flags=decoded.flags||{};
   const role=flags.repeater?'REPEATER':flags.chat?'COMPANION':flags.room?'ROOM SERVER':flags.sensor?'SENSOR':'UNKNOWN';
@@ -533,7 +552,7 @@ function renderLive() {
     return `<button class="packet-row ${accent}" data-packet-id="${escapeHtml(packet.id)}" type="button">
       <span class="packet-time"><b>${packetTime(packet)}</b><small class="packet-age">${relativeAge(packet)}</small></span>
       <span class="packet-type type-${Number(packet.payload_type)}">${escapeHtml(packetType(packet))}<small>${escapeHtml((packet.direction || 'rx').toUpperCase())}</small></span>
-      <span class="packet-copy"><strong>${liveIdentityMarkup(packet)}</strong>${packetPath(packet).some(hop=>String(hop).length===2&&/^[a-f\d]{2}$/i.test(String(hop)))?'<small class="one-byte-marker">1 byte</small>':''}<span>${renderTrackedText(preview)}</span><small>${escapeHtml(packet.observer_iata || 'Observer')} · ${Number(packet.observation_count || 1)} observation${Number(packet.observation_count || 1) === 1 ? '' : 's'}</small>${missingGpsHashes(packet).map(hash=>`<b class="no-gps">NO GPS FOR ${escapeHtml(hash)}</b>`).join('')}${matches.length?`<span class="key-match-list">${matches.map(match=>`<b class="${match.relation===trackedRelations.reply?'reply':''}">${escapeHtml(match.relation)} · ${escapeHtml(match.name || keyName(match.key))}</b>${match.relation===trackedRelations.reply&&replyHasNoRoute(packet,match.key)?'<b class="no-route">NO ROUTE</b>':''}`).join('')}</span>`:''}</span>
+      <span class="packet-copy"><strong>${liveIdentityMarkup(packet)}</strong>${packetFlagsMarkup(packet)}${packetPath(packet).some(hop=>String(hop).length===2&&/^[a-f\d]{2}$/i.test(String(hop)))?'<small class="one-byte-marker">1 byte</small>':''}<span>${renderTrackedText(preview)}</span><small>${escapeHtml(packet.observer_iata || 'Observer')} · ${Number(packet.observation_count || 1)} observation${Number(packet.observation_count || 1) === 1 ? '' : 's'}</small>${missingGpsHashes(packet).map(hash=>`<b class="no-gps">NO GPS FOR ${escapeHtml(hash)}</b>`).join('')}${matches.length?`<span class="key-match-list">${matches.map(match=>`<b class="${match.relation===trackedRelations.reply?'reply':''}">${escapeHtml(match.relation)} · ${escapeHtml(match.name || keyName(match.key))}</b>${match.relation===trackedRelations.reply&&replyHasNoRoute(packet,match.key)?'<b class="no-route">NO ROUTE</b>':''}`).join('')}</span>`:''}</span>
       <span class="packet-route">${escapeHtml(pathSummary(packet))}<small>${packet.rssi == null ? '' : `${escapeHtml(packet.rssi)} dBm`}</small></span>
     </button>`;
   }).join('');
@@ -677,10 +696,10 @@ async function loadPackets(manual = false) {
     liveState.packets = result.packets.sort((a,b)=>new Date(b.timestamp||b.first_seen)-new Date(a.timestamp||a.first_seen));
     recordTrackedPacketCounters(liveState.packets);
     updateMyLog(liveState.packets);
-    mapIngest();
     appStatsAccept(liveState.packets);
     appStatsSwitchBroker();
     await channelsDecryptLive(liveState.packets);
+    mapIngest();
     channelStatsRefresh();
     liveState.error = ''; liveState.lastSuccess = Date.now();
   } catch (error) { liveState.error = error.message || 'Connection failed'; }

@@ -131,7 +131,7 @@ function mapMetrics() {
   const events = [...mapState.events.values()];
   const metrics = MapCore.metrics(events, mapState.located, mapState.directory);
   const maxHops = events.reduce((max, e) => Math.max(max, e.path.length - 1), 0);
-  const packets = new Set(events.map(e => e.id)).size;
+  const packets = new Set(events.map(e => e.packetId || e.id)).size;
   const channelPackets = new Set(events.filter(event => event.channel || event.channelHash).map(event => event.packetId)).size;
   return { ...metrics, packets, routes: events.length, maxHops, channelPackets, edges: MapCore.edges(events, mapState.located, mapState.directory) };
 }

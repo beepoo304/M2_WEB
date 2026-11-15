@@ -227,7 +227,9 @@ function missingGpsHashes(packet) {
 }
 function packetAccent(packet,matches) {
   const path=packetPath(packet);
-  if(path.some(hop=>String(hop).length===2&&/^[a-f\d]{2}$/i.test(String(hop))))return 'packet-one-byte';
+  // Match Android LiveLogScreen precedence: ambiguous 1-byte route, then reply, then own traffic.
+  if(path.some(hop=>String(hop).length===2&&/^[a-f\\d]{2}$/i.test(String(hop))))return 'packet-one-byte';
+  if(matches.some(match=>match.relation===trackedRelations.reply))return 'packet-reply';
   if(matches.some(match=>match.relation!==trackedRelations.reply))return 'packet-own';
   return '';
 }

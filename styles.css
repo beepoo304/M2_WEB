@@ -90,7 +90,8 @@ button { color: inherit; font: inherit; }
 .packet-row:hover { background:#202725; }
 .packet-row { --packet-accent:var(--on-surface-variant); }
 .packet-row.packet-own { --packet-accent:var(--primary); }
-.packet-row.packet-one-byte { --packet-accent:#f0a84b; }
+.packet-row.packet-reply { --packet-accent:#f0a84b; }
+.packet-row.packet-one-byte { --packet-accent:#78909c; }
 .packet-row .packet-time b,.packet-row .packet-type,.packet-row .packet-copy strong { color:var(--packet-accent); }
 .packet-flags { display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
 .packet-flags b { padding:2px 5px; border:1px solid var(--outline); border-radius:5px; color:var(--on-surface-variant); font:600 9px "Roboto Mono",Consolas,monospace; }

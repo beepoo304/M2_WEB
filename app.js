@@ -54,7 +54,7 @@ function relativeAge(packet) {
 }
 function packetSummary(packet) {
   const decoded = parseDecoded(packet), type = Number(packet.payload_type);
-  if (type === 5) return `${safeText(decoded.channel, 'Private channel')} · ${safeText(decoded.text, 'Message content unavailable')}`;
+  if (type === 5 || type === 6) return decoded.text ? `${safeText(decoded.channel, 'Channel')} · ${decoded.text}` : `${safeText(decoded.channel, 'Channel')} · ${safeText(decoded.text, 'Encrypted message')}`;
   if (type === 4) return safeText(decoded.name, 'Node advertisement');
   if (type === 2) return 'Encrypted direct message';
   if (type === 8) return 'Path information';
@@ -271,6 +271,11 @@ async function channelsDecryptLive(packets) {
       if(!(await M2Channels.validMac(channel.secret,mac,encrypted)))continue;
       const message=await M2Channels.decryptMessage(channel.secret,encrypted);
       if(!message)continue;
+      decoded.sender = message.sender;
+      decoded.text = message.text;
+      decoded.channel = channel.name;
+      decoded.decryptionStatus = 'decrypted';
+      packet._decoded = decoded;
       const incoming={ id:String(packet.id), sender:message.sender, text:message.text, timestamp:message.timestamp,
         hops:packetPath(packet).length, observers:[packet.observer_name].filter(Boolean),
         repeats:Number(packet.observation_count||1), snr:packet.snr??null, packetHash:packet.hash||'' };
@@ -675,7 +680,7 @@ async function loadPackets(manual = false) {
     mapIngest();
     appStatsAccept(liveState.packets);
     appStatsSwitchBroker();
-    channelsDecryptLive(liveState.packets);
+    await channelsDecryptLive(liveState.packets);
     channelStatsRefresh();
     liveState.error = ''; liveState.lastSuccess = Date.now();
   } catch (error) { liveState.error = error.message || 'Connection failed'; }

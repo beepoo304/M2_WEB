@@ -152,49 +152,32 @@
     return mac[0] === expected[0] && mac[1] === expected[1];
   }
 
-  // ---------- Decrypt private channel messages (AES‑GCM) ----------
+  // ---------- Decrypt channel messages (matches M² Android ChannelCrypto) ----------
   async function decryptMessage(secretHex, encryptedHex) {
     const secret = decodeHex(secretHex), encrypted = decodeHex(encryptedHex);
-    if (!secret || !encrypted) return null;
-    const keyData = secret.slice(0, 16);
-    const iv = new Uint8Array(12); // zero IV – legacy payloads have no IV
-    // If secret length is 32 bytes (64 hex chars) assume legacy AES‑ECB payload.
-    if (secret.length === 32) {
-      const plain = aesEcbDecrypt(keyData, encrypted);
-      if (!plain || plain.length < 6) return null;
-      const view = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
-      const epoch = view.getUint32(0, true);
-      let end = 5;
-      while (end < plain.length && plain[end] !== 0) end++;
-      const body = new TextDecoder().decode(plain.subarray(5, end));
-      const split = body.indexOf(': ');
-      return {
-        sender: split > 0 ? body.slice(0, split) : 'Anonymous',
-        text: split > 0 ? body.slice(split + 2) : body,
-        timestamp: new Date(epoch * 1000).toISOString()
-      };
-    }
-    // New format – AES‑GCM.
+    if (!secret || !encrypted || secret.length < 16) return null;
+
+    const plain = aesEcbDecrypt(secret.slice(0, 16), encrypted);
+    if (!plain || plain.length < 6) return null;
+
+    const view = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
+    const epoch = view.getUint32(0, true);
+    if (!Number.isFinite(epoch) || epoch === 0) return null;
+
+    let end = 5;
+    while (end < plain.length && plain[end] !== 0) end++;
+    let body;
     try {
-      const key = await crypto.subtle.importKey('raw', keyData, { name: 'AES-GCM' }, false, ['decrypt']);
-      const plainBuf = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, encrypted);
-      const plain = new Uint8Array(plainBuf);
-      if (plain.length < 6) return null;
-      const view = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
-      const epoch = view.getUint32(0, true);
-      let end = 5;
-      while (end < plain.length && plain[end] !== 0) end++;
-      const body = new TextDecoder().decode(plain.subarray(5, end));
-      const split = body.indexOf(': ');
-      return {
-        sender: split > 0 ? body.slice(0, split) : 'Anonymous',
-        text: split > 0 ? body.slice(split + 2) : body,
-        timestamp: new Date(epoch * 1000).toISOString()
-      };
-    } catch (e) {
-      console.error('AES‑GCM decryptMessage error:', e);
+      body = new TextDecoder('utf-8', { fatal: true }).decode(plain.subarray(5, end));
+    } catch {
       return null;
     }
+    const split = body.indexOf(': ');
+    return {
+      sender: split > 0 ? body.slice(0, split) : 'Anonymous',
+      text: split > 0 ? body.slice(split + 2) : body,
+      timestamp: new Date(epoch * 1000).toISOString()
+    };
   }
 
   // ---------- Channel parsing ----------

@@ -263,6 +263,7 @@ function mapCloseKeyMenu(e) {
 }
 
 function mapSetFullscreen(on) {
+  if (!on) mapCancelFlight();                     // jak w M²: wyjście z pełnego ekranu przerywa lot i nagrywanie
   mapState.fullscreen = on;
   document.querySelector('.m2-map')?.classList.toggle('fs', on);
   document.body.classList.toggle('map-fs-on', on);
@@ -400,7 +401,8 @@ function mapFade(markers, ms = 500) {
   markers.filter(Boolean).forEach(m => { const el = m.getElement()?.firstChild; if (el) { el.style.transition = `opacity ${ms}ms`; el.style.opacity = '0'; } });
   return new Promise(resolve => setTimeout(() => { markers.filter(Boolean).forEach(m => m.remove()); resolve(); }, ms));
 }
-function mapCancelFlight() {
+function mapCancelFlight(keepRecording) {
+  if (!keepRecording) mapRecCancel();
   if (!mapState.flight) return;
   mapState.flight.cancelled = true; mapState.flight = null;
   if (mapState.view) mapState.view.options.zoomSnap = 1;
@@ -410,18 +412,80 @@ function mapCancelFlight() {
   updateMapView();
 }
 
-function mapLongestClicked() {
+async function mapLongestClicked() {
   const m = mapMetrics();
   if (m.longestRoute.length < 2 || !mapState.view) return;
-  const route = m.longestRoute.slice(), edges = m.edges;     // migawka trasy, jak w M²
+  const route = m.longestRoute.slice(), edges = m.edges, key = mapState.key;     // migawka trasy, jak w M²
+  mapCancelFlight();
   mapStop();
-  mapClearPending(mapState.key);
+  mapClearPending(key);
+  // Jak w M²: najpierw zgoda na nagrywanie ekranu; odmowa = brak lotu.
+  let stream = null;
+  try { stream = await mapRecRequest(); } catch { mapMessage('Screen recording permission denied'); return; }
   mapSetFullscreen(true);
-  setTimeout(() => mapFly(route, edges), 180);
+  if (!stream) { setTimeout(() => mapFly(route, edges), 180); return; }   // przeglądarka bez nagrywania ekranu — sam lot
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  if (!stream.active || !mapState.fullscreen) { stream.getTracks().forEach(t => t.stop()); return; }
+  mapRecBegin(stream, key);
+  await new Promise(resolve => setTimeout(resolve, 250));
+  mapFly(route, edges, mapRecStop);
 }
 
-async function mapFly(route, edges) {
-  mapCancelFlight();
+// ---------- Nagranie lotu (port ScreenRecordingService + dialog „Save animation as MP4?” z NetworkMapScreen.kt) ----------
+function mapRecRequest() {
+  mapRecCancel();
+  if (!navigator.mediaDevices?.getDisplayMedia || typeof MediaRecorder === 'undefined') return Promise.resolve(null);
+  return navigator.mediaDevices.getDisplayMedia({ video: { frameRate: 30 }, audio: false, preferCurrentTab: true, selfBrowserSurface: 'include', surfaceSwitching: 'exclude' });
+}
+function mapRecBegin(stream, key) {
+  const type = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'].find(t => MediaRecorder.isTypeSupported(t)) || '';
+  const rec = new MediaRecorder(stream, { ...(type ? { mimeType: type } : {}), videoBitsPerSecond: 12_000_000 });
+  const r = { rec, stream, key, chunks: [], type: rec.mimeType || type || 'video/webm' };
+  rec.ondataavailable = e => { if (e.data.size) r.chunks.push(e.data); };
+  stream.getVideoTracks()[0]?.addEventListener('ended', () => { if (mapState.recorder === r) mapRecCancel(); });
+  rec.start(1000); mapState.recorder = r;
+}
+function mapRecCancel() {
+  const r = mapState.recorder; mapState.recorder = null; if (!r) return;
+  try { if (r.rec.state !== 'inactive') r.rec.stop(); } catch {}
+  r.stream.getTracks().forEach(t => t.stop());
+}
+function mapRecStop() {
+  const r = mapState.recorder; mapState.recorder = null; if (!r) return;
+  r.rec.onstop = () => { r.stream.getTracks().forEach(t => t.stop()); if (r.chunks.length) mapRecDialog(new Blob(r.chunks, { type: r.type }), r.key); };
+  try { r.rec.stop(); } catch { r.stream.getTracks().forEach(t => t.stop()); }
+}
+function mapRecDialog(blob, key) {
+  const ext = /mp4/.test(blob.type) ? 'mp4' : 'webm';
+  const box = document.createElement('div'); box.className = 'dialog-backdrop';
+  box.innerHTML = `<section class="dialog" role="dialog" aria-modal="true" aria-label="Save animation"><h3>Save animation as ${ext.toUpperCase()}?</h3><p class="dialog-note">The animated longest route will be saved in Downloads.</p><div class="dialog-actions"><button type="button" class="dialog-confirm" data-yes>YES</button><button type="button" class="dialog-cancel" data-no>NO</button></div></section>`;
+  const close = () => box.remove();
+  box.addEventListener('click', e => { if (e.target === box) close(); });
+  box.querySelector('[data-no]').addEventListener('click', close);
+  box.querySelector('[data-yes]').addEventListener('click', () => {
+    close(); mapMessage('Saving screen recording…'); mapProgress(true);
+    try {
+      const d = new Date(), p2 = n => String(n).padStart(2, '0');
+      const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+      const name = `M2-${String(key || '').slice(0, 4).toUpperCase()}-${stamp}-flight.${ext}`;
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob); link.download = name;
+      document.body.appendChild(link); link.click(); link.remove();
+      setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+      mapMessage(`Saved ${name}`);
+    } catch { mapMessage(`Cannot save ${ext.toUpperCase()}`); }
+    mapProgress(false);
+  });
+  document.body.appendChild(box);
+}
+/** Klatka lotu jak L.Map.flyTo (_move): setView({animate:false}) robi _resetView, który co klatkę usuwał wszystkie kafelki — mapa znikała spod linii. */
+function mapFlightMove(view, lat, lon, zoom) {
+  view._move(L.latLng(lat, lon), zoom);
+  view.fire('zoomend').fire('moveend');
+}
+
+async function mapFly(route, edges, onFinished) {
+  mapCancelFlight(true);
   const flight = { cancelled: false }; mapState.flight = flight; mapUpdatePanel();
   const view = mapState.view, layer = mapState.layer, badges = mapState.flightLayer;
   const alive = () => !flight.cancelled && mapState.view === view;
@@ -459,7 +523,7 @@ async function mapFly(route, edges) {
         raw = Math.min(1, (performance.now() - t0) / duration);
         const t = raw * raw * (3 - 2 * raw);
         const lat = from.lat + (to.lat - from.lat) * t, lon = from.lon + (to.lon - from.lon) * t;
-        view.setView([lat, lon], startZoom + (targetZoom - startZoom) * t, { animate: false });
+        mapFlightMove(view, lat, lon, startZoom + (targetZoom - startZoom) * t);
         segment.setLatLngs([[from.lat, from.lon], [lat, lon]]); sharedSeg?.setLatLngs([[from.lat, from.lon], [lat, lon]]);
         if (!arrival && raw >= .8) {
           const last = index === route.length - 1;
@@ -475,6 +539,8 @@ async function mapFly(route, edges) {
     view.options.zoomSnap = 1;
     view.fitBounds(route.map(p => [p.lat, p.lon]), { padding: [90, 90], animate: true });
     await sleep(4000); if (!alive()) return;
+    await sleep(250); if (!alive()) return;
+    onFinished?.();
     mapState.flight = null;
     if (compass) compass.hidden = true;
     badges.clearLayers(); updateMapView();

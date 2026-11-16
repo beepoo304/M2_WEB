@@ -1,5 +1,5 @@
 // Wydanie z GitHuba (tag M2_WEB) — aktualizować razem z package.json przy każdym release.
-const M2_WEB_RELEASE = { version: '0.5.0', date: '16.11.2026' };
+const M2_WEB_RELEASE = { version: '0.5.1', date: '16.11.2026' };
 const tabButtons = [...document.querySelectorAll('.nav-item')];
 const screen = document.getElementById('screen');
 const liveState = { packets: [], loading: false, error: '', lastSuccess: 0, selected: null, details: null, detailsLoading: false, detailsError: '', selectedChannel: '', showAllRoutes: false };
@@ -1031,6 +1031,12 @@ function renderSettings() {
     <p class="settings-muted settings-version">M² Web ${M2_WEB_RELEASE.version} · ${M2_WEB_RELEASE.date}</p>
     <p class="settings-muted settings-gh">Open source on GitHub</p>
     <a class="settings-gh-link" href="https://github.com/beepoo304/M2" target="_blank" rel="noopener noreferrer">github.com/beepoo304/M2</a>
+    <hr class="settings-divider">
+    <b class="settings-title">ANDROID APP</b>
+    <p class="settings-muted">Download the Android version (APK) from the latest release.</p>
+    <a class="settings-button" href="https://github.com/beepoo304/M2/releases/latest" target="_blank" rel="noopener noreferrer">Download Android version</a>
+    <a class="settings-gh-link" href="https://github.com/beepoo304/M2" target="_blank" rel="noopener noreferrer">github.com/beepoo304/M2</a>
+    <hr class="settings-divider">
     <button type="button" id="close-application" class="settings-close-app">Close application</button>
     <p class="settings-muted settings-close-note">Stops background listening and closes M2.</p>
   </section>${settingsApiLogOpen?renderApiLogDialog():''}${addDialog}`;

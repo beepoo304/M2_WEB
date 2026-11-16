@@ -70,13 +70,14 @@ function mapClearPending(key) {
   if (history[id]?.pending) { history[id].pending = false; mapSaveHistory(history); }
 }
 
+/** Jak M² (NetworkMapViewModel.collectPacket): tylko trasy z załadowanych
+ *  szczegółów obserwacji. Bez fallbacku do surowej ścieżki pakietu — pakiet
+ *  bez detali jest pomijany i ponowniebrany przy kolejnym odświeżeniu. */
 function mapRoutesForPacket(packet) {
   const cached = observationMatchCache.get(String(packet.id));
-  if (cached?.data?.loadSucceeded) {
-    const routes = observationRoutes(cached.data);
-    if (routes.length) return routes.map(r => ({ path: r.path.map(h => String(h).trim().toUpperCase()), resolved: r.resolved, observerId: String(r.observer.observer_id || '') }));
-  }
-  return [{ path: packetPath(packet), resolved: Array.isArray(packet.resolved_path) ? packet.resolved_path : [], observerId: String(packet.observer_id || '') }];
+  if (!cached?.data?.loadSucceeded) return null;
+  return observationRoutes(cached.data)
+    .map(r => ({ path: r.path.map(h => String(h).trim().toUpperCase()), resolved: r.resolved, observerId: String(r.observer.observer_id || '') }));
 }
 
 /** Wywoływane po każdym odświeżeniu Live i po pobraniu szczegółów obserwacji. */
@@ -91,18 +92,34 @@ function mapIngest() {
     const isNew = !mapState.baselineCounts || !mapState.baselineCounts.has(ident) || count > baseCount;
     if (!isNew || procCount >= count) return;
 
-    mapRoutesForPacket(packet).forEach(route => {
+    // Jak M²: bez szczegółów obserwacji pakiet nie jest zbierany (brak mnożenia
+    // tras przez obserwatorów ani fallbacku ze surowej ścieżki pakietu).
+    const routes = mapRoutesForPacket(packet);
+    if (!routes) return;
+    // Jak M² (collectPacket): distinctBy { path to resolvedPath } — ten sam
+    // pakiet tą samą ścieżką od wielu obserwatorów to jedno zdarzenie trasy.
+    const seen = new Set();
+    const additions = [];
+    routes.forEach(route => {
       const matches = relationMatches({ ...packet, _parsedPath: route.path, path_json: JSON.stringify(route.path), resolved_path: route.resolved, observer_id: route.observerId });
       const event = MapCore.routeEvent({
         id: ident, hash: packet.hash, payloadType: packet.payload_type,
         timestamp: packet.timestamp || packet.first_seen, route, matches, key: mapState.key, mode: mapState.mode,
         channel: parseDecoded(packet).channel || '', channelHash: parseDecoded(packet).channelHashHex || ''
       });
-      if (event && !mapState.events.has(event.id)) { mapState.events.set(event.id, event); added = true; }
+      if (!event) return;
+      const dedup = `${event.path.join('>')}|${event.resolvedPath.join('>')}`;
+      if (seen.has(dedup)) return;
+      seen.add(dedup);
+      additions.push(event);
     });
-    if (mapState.processedCounts) {
-      mapState.processedCounts.set(ident, count);
-    }
+    // Jak M²: filterNot { it.packetId == ... } + additions — zdarzenia pakietu
+    // są podmieniane świeżym zbiorem, nie dopisywane bez końca.
+    let replaced = false;
+    mapState.events.forEach((event, id) => { if (event.packetId === ident) { mapState.events.delete(id); replaced = true; } });
+    additions.forEach(event => { mapState.events.set(event.id, event); });
+    if (replaced || additions.length) added = true;
+    if (mapState.processedCounts) mapState.processedCounts.set(ident, count);
   });
   if (mapState.events.size > MAP_MAX_EVENTS) {
     [...mapState.events.keys()].slice(0, mapState.events.size - MAP_MAX_EVENTS).forEach(id => mapState.events.delete(id));

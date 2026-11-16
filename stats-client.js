@@ -1,7 +1,7 @@
 // M² Web — anonimowe statystyki dla panelu /admin/ (wejścia, zakładki, śledzone klucze, kanały publiczne, błędy).
 (() => {
   const ENDPOINT = 'stats/collect.php';
-  const SENT_KEYS = 'm2-web-stats-keys-v2', SENT_CHANNELS = 'm2-web-stats-channels-v1';
+  const SENT_CHANNELS = 'm2-web-stats-channels-v1';
   let errors = 0, keysTimer = 0;
 
   function send(event) {
@@ -13,16 +13,17 @@
   function readSet(storage, name) { try { return new Set(JSON.parse(storage.getItem(name) || '[]')); } catch { return new Set(); } }
   function writeSet(storage, name, set) { try { storage.setItem(name, JSON.stringify([...set].slice(-200))); } catch {} }
 
-  // Klucz liczony raz na sesję; czekamy chwilę, aż aplikacja ustali nazwę węzła.
+  // Klucz liczony raz na wejście na stronę (każde odświeżenie też); czekamy chwilę, aż aplikacja ustali nazwę węzła.
   // Timer nie jest resetowany: liczniki zapisują klucze co kilka sekund i wcześniej wysyłka nigdy nie dochodziła.
   let keysLatest = [];
+  const keysSent = new Set();
   function keysChanged(keys) {
     keysLatest = keys || [];
     if (keysTimer) return;
     keysTimer = setTimeout(() => {
       keysTimer = 0;
       const keys = keysLatest;
-      const sent = readSet(sessionStorage, SENT_KEYS);
+      const sent = keysSent;
       const fresh = (keys || []).filter(item => /^[a-f0-9]{64}$/i.test(item?.key || '') && !sent.has(item.key.toLowerCase()));
       if (!fresh.length) return;
       // fetch zamiast sendBeacon: klucz oznaczony jako wysłany dopiero po potwierdzeniu serwera (np. nie po 429).
@@ -30,7 +31,6 @@
       fetch(ENDPOINT, { method: 'POST', body, keepalive: true }).then(response => {
         if (!response.ok) return;
         fresh.forEach(item => sent.add(item.key.toLowerCase()));
-        writeSet(sessionStorage, SENT_KEYS, sent);
       }).catch(() => {});
     }, 5000);
   }

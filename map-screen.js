@@ -155,7 +155,8 @@ function mapIsNewRecord(km) {
 
 function mapStart() {
   if (!mapState.key || mapState.running) return;
-  if (mapState.committed) { mapState.events.clear(); mapState.committed = false; mapState.startedAt = 0; mapState.name = ''; }
+  // Jak w M² (NetworkMapViewModel.start): Start po Stop kontynuuje sesję; czyści tylko Restart.
+  mapState.committed = false;
   if (!mapState.baselineCounts || mapState.baselineCounts.size === 0 || !mapState.startedAt) mapSnapshotBaseline();
   if (!mapState.startedAt) mapState.startedAt = Date.now();
   mapState.running = true; mapSaveSession();
@@ -167,7 +168,7 @@ function mapStop() {
   if (!mapState.running) { mapUpdatePanel(); return; }
   mapState.running = false;
   const km = mapMetrics().longestRouteKm;
-  if (!mapState.committed && km > 0) mapCommitLongest(mapState.key, km);
+  if (km > 0) mapCommitLongest(mapState.key, km);   // jak w M²: wynik zapisywany przy każdym Stop
   mapState.committed = true; mapSaveSession(); mapUpdatePanel(); updateMapView();
 }
 /** Restart: anuluje lot, czyści sesję (tryb zostaje), centruje wybrany węzeł na zoom 12. */

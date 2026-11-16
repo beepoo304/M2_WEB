@@ -55,7 +55,7 @@ function m2_mapper_get(string $url): array {
     curl_setopt_array($curl, [
         CURLOPT_RETURNTRANSFER => true, CURLOPT_FOLLOWLOCATION => false,
         CURLOPT_CONNECTTIMEOUT => 8, CURLOPT_TIMEOUT => 25, CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4, CURLOPT_ENCODING => '',
-        CURLOPT_HTTPHEADER => ['Accept: application/json'], CURLOPT_USERAGENT => 'M2-Web (sn9pj.pzk.pl)',
+        CURLOPT_HTTPHEADER => ['Accept: application/json'], CURLOPT_USERAGENT => 'M2-Web',
     ]);
     $body = curl_exec($curl);
     $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);

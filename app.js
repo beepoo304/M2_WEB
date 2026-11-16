@@ -264,8 +264,18 @@ function loadTrackedKeys() {
   catch { return []; }
 }
 function saveTrackedKeys() { sessionStorage.setItem(KEY_STORAGE,JSON.stringify(trackedKeys)); }
-function loadMyLogPackets() { try { const value=JSON.parse(sessionStorage.getItem(MY_LOG_STORAGE)||'[]'); return Array.isArray(value)?value.slice(0,250):[]; } catch { return []; } }
-function saveMyLogPackets() { sessionStorage.setItem(MY_LOG_STORAGE,JSON.stringify(myLogPackets.slice(0,250))); }
+// M² OwnTrafficLogStore: the 250-entry log survives restarts and Clear only
+// moves the cut-off (clearedAt), so older packets never come back.
+const MY_LOG_CLEARED_STORAGE = 'm2-web-own-traffic-cleared-v1';
+let myLogClearedAt = Number(localStorage.getItem(MY_LOG_CLEARED_STORAGE)) || 0;
+function loadMyLogPackets() {
+  try {
+    const value=JSON.parse(localStorage.getItem(MY_LOG_STORAGE)||sessionStorage.getItem(MY_LOG_STORAGE)||'[]');
+    return Array.isArray(value)?value.filter(packet=>packet&&typeof packet==='object').slice(0,250):[];
+  } catch { return []; }
+}
+function saveMyLogPackets() { try { localStorage.setItem(MY_LOG_STORAGE,JSON.stringify(myLogPackets.slice(0,250))); } catch {} }
+function clearMyLog() { myLogClearedAt=Date.now(); myLogPackets=[]; try { localStorage.setItem(MY_LOG_CLEARED_STORAGE,String(myLogClearedAt)); localStorage.removeItem(MY_LOG_STORAGE); } catch {} }
 // Kanały są trwałe (localStorage) jak w M² Android; stary format sesyjny jest migrowany.
 function migrateChannel(value) {
   return {
@@ -318,8 +328,9 @@ async function channelsDecryptLive(packets) {
   if(!keyed.length)return;
   let changed=false;
   for(const packet of (Array.isArray(packets)?packets:[])) {
-    if(Number(packet.payload_type)!==5 && Number(packet.payload_type)!==6)continue;
+    if(Number(packet.payload_type)!==5)continue;
     const decoded=parseDecoded(packet);
+    if(decoded.decryptionStatus!=='decryption_failed')continue;
     const channelHashHex=String(decoded.channelHashHex||'');
     const encrypted=String(decoded.encryptedData||''), mac=String(decoded.mac||'');
     if(!channelHashHex||!encrypted||!mac)continue;
@@ -329,9 +340,9 @@ async function channelsDecryptLive(packets) {
       const message=await M2Channels.decryptMessage(channel.secret,encrypted);
       if(!message)continue;
       decoded.sender = message.sender;
-      decoded.text = message.text;
+      decoded.text = `${message.sender}: ${message.text}`;
       decoded.channel = channel.name;
-      decoded.decryptionStatus = 'decrypted';
+      decoded.decryptionStatus = 'decrypted_locally';
       packet._decoded = decoded;
       const incoming={ id:String(packet.id), sender:message.sender, text:message.text, timestamp:message.timestamp,
         hops:packetPath(packet).length, observers:[packet.observer_name].filter(Boolean),
@@ -440,17 +451,24 @@ function formatRunningTime(milliseconds) {
 }
 function appStatsReset() { appStats={ startedAtMs:Date.now(), packetCount:0, accumulatedRunningMs:0, brokerRunningMs:{}, seen:liveState.packets.map(packet=>String(packet.hash||'').trim().toLowerCase()).filter(Boolean) }; appStatsBroker=sourceLabel(activeApiSource); appStatsBrokerStart=Date.now(); saveAppStats(); }
 function updateMyLog(packets) {
-  const related=(Array.isArray(packets)?packets:[]).filter(packet=>enhancedMatches(packet).length>0);
+  // OwnTrafficLogEngine.update: every confirmed relation counts (DESTINATION and
+  // REPORTED BY included), keyed by packet identity, newest first, max 250.
+  const related=(Array.isArray(packets)?packets:[]).filter(packet=>packetEpoch(packet)>myLogClearedAt&&(enhancedMatches(packet).length>0||relationMatches(packet).some(match=>match.relation==='DESTINATION')));
   if(!related.length)return;
-  const byId=new Map(myLogPackets.map(packet=>[String(packet.id),packet]));
-  related.forEach(packet=>byId.set(String(packet.id),packet));
-  myLogPackets=[...byId.values()].sort((a,b)=>new Date(b.timestamp||b.first_seen)-new Date(a.timestamp||a.first_seen)).slice(0,250);
+  const entries=new Map(myLogPackets.map(packet=>[packetIdentity(packet),packet]));
+  related.forEach(packet=>{ const {_rowHtml,_rowMemo,_decoded,_parsedPath,...plain}=packet; entries.set(packetIdentity(packet),_decoded?{...plain,decoded_json:JSON.stringify(_decoded)}:plain); });
+  const ordered=[...entries.values()].sort((a,b)=>packetEpoch(b)-packetEpoch(a)).slice(0,250);
+  const changed=ordered.length!==myLogPackets.length||ordered.some((packet,index)=>packetIdentity(packet)!==packetIdentity(myLogPackets[index])||packet.observation_count!==myLogPackets[index].observation_count);
+  myLogPackets=ordered;
+  if(!changed)return;
   saveMyLogPackets();
+  if(currentScreen()==='My log'&&!liveState.selected)renderMyLog();
 }
 function packetIdentity(packet) {
   const hash=String(packet.hash||'').trim().toLowerCase();
   return hash ? `hash#${hash}` : `raw#${Number(packet.payload_type)||0}#${String(packet.timestamp||'')}#${String(packet.raw_hex||'').trim().toLowerCase()}`;
 }
+function myLogNodeName(packet) { const decoded=parseDecoded(packet); return String(decoded.name||'').trim()||packet.observer_name||'Unknown observer'; }
 function packetEpoch(packet) {
   const value=Date.parse(packet.timestamp||packet.first_seen||'');
   return Number.isFinite(value) ? value : 0;
@@ -1010,8 +1028,8 @@ function renderSettings() {
   document.getElementById('close-application')?.addEventListener('click',closeApplication);
 }
 function renderMyLog() {
-  const rows=myLogPackets.map(packet=>`<button class="packet-row packet-own" data-my-log-id="${escapeHtml(packet.id)}" type="button"><span class="packet-time"><b>${packetTime(packet)}</b><small class="packet-age">${relativeAge(packet)}</small></span><span class="packet-type type-${Number(packet.payload_type)}">${escapeHtml(packetType(packet))}<small>${escapeHtml((packet.direction||'rx').toUpperCase())}</small></span><span class="packet-copy"><strong>${liveIdentityMarkup(packet)}</strong><span>${renderTrackedText(packetSummary(packet))}</span><small>${escapeHtml(packet.observer_iata||'Observer')} · ${Number(packet.observation_count||1)} observation${Number(packet.observation_count||1)===1?'':'s'}</small></span><span class="packet-route">${escapeHtml(pathSummary(packet))}<small>${packet.rssi==null?'':`${escapeHtml(packet.rssi)} dBm`}</small></span></button>`).join('');
-  screen.innerHTML=`<section class="live-screen my-log-screen"><div class="live-heading"><div><div class="eyebrow">SAVED DEVICE ACTIVITY</div><h1>My devices log</h1><p>Newest first · ${myLogPackets.length} / 250</p></div><div class="my-log-actions"><button id="export-my-log" type="button" ${myLogPackets.length?'':'disabled'}>Export</button><button id="clear-my-log" type="button" ${myLogPackets.length?'':'disabled'}>Clear</button></div></div><div class="packet-list">${rows||'<div class="empty-feed">No activity from saved device keys.</div>'}</div></section>${liveState.selected?renderDetail(liveState.selected):''}`;
+  const rows=myLogPackets.map(packet=>`<button class="packet-row packet-own my-log-row" data-my-log-id="${escapeHtml(packet.id)}" type="button"><span class="my-log-head"><b>${escapeHtml(packetType(packet))}</b><small>${escapeHtml(packetTime(packet))}</small></span><strong>${escapeHtml(myLogNodeName(packet))}</strong><span class="my-log-detail">${renderTrackedText(packetSummary(packet))}</span></button>`).join('');
+  screen.innerHTML=`<section class="live-screen my-log-screen"><div class="live-heading"><div><div class="eyebrow">SAVED DEVICE ACTIVITY</div><h1>MY DEVICES LOG</h1><p>Newest first · ${myLogPackets.length} / 250</p></div><div class="my-log-actions"><button id="export-my-log" type="button" ${myLogPackets.length?'':'disabled'}>Export</button><button id="clear-my-log" type="button" ${myLogPackets.length?'':'disabled'}>Clear</button></div></div><div class="packet-list">${rows||'<div class="empty-feed">No activity from saved device keys</div>'}</div></section>${liveState.selected?renderDetail(liveState.selected):''}`;
   screen.querySelectorAll('[data-my-log-id]').forEach(row=>row.addEventListener('click',()=>{liveState.selected=myLogPackets.find(packet=>String(packet.id)===row.dataset.myLogId)||null;liveState.details=null;liveState.detailsError='';liveState.showAllRoutes=false;loadPacketDetails(liveState.selected,renderMyLog);}));
   screen.querySelector('.detail-close')?.addEventListener('click',closeDetail);
   screen.querySelector('.detail-close-secondary')?.addEventListener('click',closeDetail);
@@ -1019,7 +1037,7 @@ function renderMyLog() {
   screen.querySelector('.packet-detail-backdrop')?.addEventListener('click',event=>{if(event.target===event.currentTarget)closeDetail();});
   screen.querySelector('.copy-packet-hash')?.addEventListener('click',event=>copyValue(liveState.selected?.hash,event.currentTarget));
   screen.querySelector('.copy-source-key')?.addEventListener('click',event=>{if(liveState.selected)copyValue(detailKey(liveState.selected),event.currentTarget);});
-  document.getElementById('clear-my-log')?.addEventListener('click',()=>{myLogPackets=[];saveMyLogPackets();renderMyLog();});
+  document.getElementById('clear-my-log')?.addEventListener('click',()=>{clearMyLog();renderMyLog();});
   document.getElementById('export-my-log')?.addEventListener('click',()=>{const content=myLogPackets.map(packet=>`${packetTime(packet)} · ${packetType(packet)} · ${liveIdentityLabel(packet)}\n${packetSummary(packet)}\nHash: ${packet.hash||'—'}\n`).join('\n');const blob=new Blob([content],{type:'text/plain'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`M2_MY_LOG_${new Date().toISOString().replace(/[:.]/g,'-')}.txt`;link.click();URL.revokeObjectURL(url);});
 }
 // ---------- Ekran Channels: pełny port z M² Android (ChannelsScreen.kt) ----------

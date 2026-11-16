@@ -1,11 +1,11 @@
 // M² Web — channel logic (port from M² Android: ChannelCrypto + ChannelRepository).
-// Updated: uses AES‑GCM for private channel decryption instead of insecure AES‑ECB.
-// Retains AES‑ECB utilities for backward‑compatibility tests (exposed as _aesEcbDecrypt).
+// MeshCore channels use AES-128-ECB with a 2-byte HMAC-SHA256 check, exactly as
+// M² ChannelCrypto.decryptMessage does; there is no other cipher mode.
 
 (function (root) {
   'use strict';
 
-  // ---------- AES‑ECB (legacy, used only for compatibility) ----------
+  // ---------- AES-128-ECB decrypt ----------
   const SBOX = new Uint8Array(256);
   const INV_SBOX = new Uint8Array(256);
   (function buildTables() {
@@ -152,20 +152,15 @@
     return mac[0] === expected[0] && mac[1] === expected[1];
   }
 
-  // ---------- Decrypt channel messages (Android AES-ECB + legacy web AES-GCM) ----------
+  // ---------- Decrypt channel messages (M² ChannelCrypto: AES-128-ECB) ----------
   function decodePlainMessage(plain) {
     if (!plain || plain.length < 6) return null;
     const view = new DataView(plain.buffer, plain.byteOffset, plain.byteLength);
     const epoch = view.getUint32(0, true);
     let end = 5;
     while (end < plain.length && plain[end] !== 0) end++;
-    let body;
-    try {
-      body = new TextDecoder('utf-8', { fatal: true }).decode(plain.subarray(5, end));
-    } catch {
-      return null;
-    }
-    if (!body || !Number.isFinite(epoch)) return null;
+    // Kotlin String(bytes, UTF_8) replaces invalid sequences instead of failing.
+    const body = new TextDecoder('utf-8').decode(plain.subarray(5, end));
     const split = body.indexOf(': ');
     return {
       sender: split > 0 ? body.slice(0, split) : 'Anonymous',
@@ -178,18 +173,8 @@
     const secret = decodeHex(secretHex), encrypted = decodeHex(encryptedHex);
     if (!secret || !encrypted || secret.length < 16) return null;
 
-    const ecbPlain = aesEcbDecrypt(secret.slice(0, 16), encrypted);
-    const ecbMessage = decodePlainMessage(ecbPlain);
-    if (ecbMessage) return ecbMessage;
-
     try {
-      const key = await crypto.subtle.importKey('raw', secret.slice(0, 16), { name: 'AES-GCM' }, false, ['decrypt']);
-      const plainBuffer = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: new Uint8Array(12) },
-        key,
-        encrypted
-      );
-      return decodePlainMessage(new Uint8Array(plainBuffer));
+      return decodePlainMessage(aesEcbDecrypt(secret.slice(0, 16), encrypted));
     } catch {
       return null;
     }

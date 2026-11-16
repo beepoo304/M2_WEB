@@ -394,3 +394,11 @@ body.map-fullscreen .screen { position:relative; width:100%; max-width:none; mar
 #app-closed h2 { margin:0; font-size:26px; }
 #app-closed p { margin:0 0 18px; color:var(--on-surface-variant); }
 #app-closed button { border:1px solid #67d78a55; border-radius:12px; padding:12px 22px; background:#67d78a1a; color:var(--primary); font-weight:700; cursor:pointer; }
+
+/* My log rows: M² OwnTrafficLogScreen layout (type + time, node, detail). */
+.my-log-row { display:flex; flex-direction:column; align-items:stretch; gap:3px; text-align:left; }
+.my-log-row .my-log-head { display:flex; justify-content:space-between; gap:12px; }
+.my-log-row .my-log-head b { color:var(--primary); font-size:12px; letter-spacing:.04em; }
+.my-log-row .my-log-head small { color:var(--on-surface-variant); font:11px "Roboto Mono",Consolas,monospace; }
+.my-log-row strong { font-size:13px; font-weight:600; }
+.my-log-row .my-log-detail { color:var(--on-surface-variant); font-size:11px; overflow-wrap:anywhere; }

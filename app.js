@@ -18,6 +18,7 @@ const ACTIVE_API_STORAGE = 'm2-web-active-api-v1';
 const refreshIntervalMs = 3_000;
 let nextRefreshAt = Date.now() + refreshIntervalMs;
 let trackedKeys = loadTrackedKeys();
+window.M2Stats?.keysChanged(trackedKeys);
 let myLogPackets = loadMyLogPackets();
 let savedChannels = loadChannels();
 let apiSources = loadApiSources();

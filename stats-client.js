@@ -14,9 +14,14 @@
   function writeSet(storage, name, set) { try { storage.setItem(name, JSON.stringify([...set].slice(-200))); } catch {} }
 
   // Klucz liczony raz na sesję; czekamy chwilę, aż aplikacja ustali nazwę węzła.
+  // Timer nie jest resetowany: liczniki zapisują klucze co kilka sekund i wcześniej wysyłka nigdy nie dochodziła.
+  let keysLatest = [];
   function keysChanged(keys) {
-    clearTimeout(keysTimer);
+    keysLatest = keys || [];
+    if (keysTimer) return;
     keysTimer = setTimeout(() => {
+      keysTimer = 0;
+      const keys = keysLatest;
       const sent = readSet(sessionStorage, SENT_KEYS);
       const fresh = (keys || []).filter(item => /^[a-f0-9]{64}$/i.test(item?.key || '') && !sent.has(item.key.toLowerCase()));
       if (!fresh.length) return;

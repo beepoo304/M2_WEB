@@ -578,3 +578,8 @@ body.map-fs-on #map-canvas .leaflet-bottom { bottom:0; }
 .my-log-screen.apk .empty-feed { border:0; background:none; text-align:left; padding:24px; }
 .screen:has(> .channels-screen.apk),.screen:has(> .my-log-screen.apk) { padding-left:0; padding-right:0; padding-top:0; }
 .channels-screen.apk,.my-log-screen.apk { max-width:none; }
+/* GUIDE 1:1 z GuideScreen.kt */
+.guide-head h1 { font-size:20px; font-weight:700; letter-spacing:0; }
+.guide-lang select { appearance:none; -webkit-appearance:none; border:1px solid var(--outline); border-radius:999px; background:transparent; color:var(--primary); padding:9px 22px; font:500 14px "Segoe UI",system-ui,sans-serif; text-align:center; cursor:pointer; }
+.guide-lang select option { background:var(--surface); color:var(--on-surface); }
+.guide-section { border:.5px solid #80808080; border-radius:8px; padding:10px; }

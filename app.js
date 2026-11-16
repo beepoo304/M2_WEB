@@ -1,5 +1,5 @@
 // Wydanie z GitHuba (tag M2_WEB) — aktualizować razem z package.json przy każdym release.
-const M2_WEB_RELEASE = { version: '0.4.1', date: '16.11.2026' };
+const M2_WEB_RELEASE = { version: '0.5.0', date: '16.11.2026' };
 const tabButtons = [...document.querySelectorAll('.nav-item')];
 const screen = document.getElementById('screen');
 const liveState = { packets: [], loading: false, error: '', lastSuccess: 0, selected: null, details: null, detailsLoading: false, detailsError: '', selectedChannel: '', showAllRoutes: false };
@@ -1022,6 +1022,10 @@ function renderSettings() {
     <div class="settings-export-actions"><button type="button" class="settings-button" id="export-save">Save</button><button type="button" class="settings-button outlined" id="export-choose" ${M2Export.supported?'':'disabled title="This browser can only save to Downloads"'}>Choose location</button>${settingsUi.exportDir?'<button type="button" class="text-button" id="export-default">Default</button>':''}</div>
     ${M2Export.supported?'':'<p class="settings-muted">This browser can only save to Downloads.</p>'}
     <hr class="settings-divider">
+    <b class="settings-title">MAPPER API</b>
+    <label class="settings-field settings-input"><span class="settings-field-label">Coverage map API (Mapper button on the map)</span><input id="mapper-api" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(settingsUi.mapperApi??M2Mapper.api())}"></label>
+    <div class="settings-export-actions"><button type="button" class="settings-button" id="mapper-api-save">Save</button>${(settingsUi.mapperApi??M2Mapper.api())!==M2Mapper.DEFAULT_API?'<button type="button" class="text-button" id="mapper-api-default">Default</button>':''}</div>
+    <hr class="settings-divider">
     <a class="settings-kofi" href="https://ko-fi.com/beepoo304" target="_blank" rel="noopener noreferrer"><b>Support M2 on Ko-fi</b><span>ko-fi.com/beepoo304</span></a>
     <hr class="settings-divider flush">
     <p class="settings-muted settings-version">M² Web ${M2_WEB_RELEASE.version} · ${M2_WEB_RELEASE.date}</p>
@@ -1069,6 +1073,9 @@ function renderSettings() {
   document.getElementById('text-size-default')?.addEventListener('click',()=>{applyTextScale(1);rerender();});
   document.getElementById('export-choose')?.addEventListener('click',async()=>{try{settingsUi.exportDir=await M2Export.choose();rerender();}catch{}});
   document.getElementById('export-default')?.addEventListener('click',()=>{settingsUi.exportDir=null;rerender();});
+  document.getElementById('mapper-api')?.addEventListener('input',event=>{settingsUi.mapperApi=event.target.value;});
+  document.getElementById('mapper-api-default')?.addEventListener('click',()=>{settingsUi.mapperApi=M2Mapper.DEFAULT_API;rerender();});
+  document.getElementById('mapper-api-save')?.addEventListener('click',()=>{const value=(settingsUi.mapperApi??M2Mapper.api()).trim();if(!/^https:\/\/[^\s/?#]+\.[^\s?#]+$/i.test(value)){showSettingsToast('Enter a valid https:// address');return;}M2Mapper.setApi(value);settingsUi.mapperApi=null;rerender();showSettingsToast('Mapper API saved');});
   document.getElementById('export-save')?.addEventListener('click',async()=>{await M2Export.save(settingsUi.exportDir);showSettingsToast('Export location saved');});
   document.getElementById('close-application')?.addEventListener('click',event=>{event.currentTarget.disabled=true;event.currentTarget.textContent='Closing…';closeApplication();});
 }

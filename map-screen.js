@@ -223,6 +223,7 @@ function mapRender() {
     </div>
     <button type="button" id="map-fs" class="m2-fs-button" title="Fullscreen" aria-label="Fullscreen">${MAP_FS_ICON}</button>
     <div class="m2-zoom" role="group" aria-label="Zoom"><button type="button" id="map-zoom-in" title="Zoom in" aria-label="Zoom in">+</button><button type="button" id="map-zoom-out" title="Zoom out" aria-label="Zoom out">−</button></div>
+    <div class="m2-mapper"><button type="button" id="map-mapper" title="Coverage from mapper" aria-pressed="false">Mapper</button><input id="map-mapper-opacity" type="range" min="10" max="100" step="5" title="Coverage opacity" aria-label="Coverage opacity"></div>
     <button type="button" id="map-fs-exit" class="m2-fs-exit" title="Exit fullscreen" aria-label="Exit fullscreen">${MAP_FS_EXIT_ICON}</button>
     <img class="m2-fs-logo" src="assets/m2-logo.svg" alt="M²">
     <div id="map-compass" class="m2-compass" hidden>N 000°</div>
@@ -254,6 +255,7 @@ function mapRender() {
   L.tileLayer(MAP_TILES.url, { maxZoom: MAP_TILES.maxZoom, attribution: MAP_TILES.attribution }).addTo(mapState.view);
   mapState.layer = L.layerGroup().addTo(mapState.view);
   mapState.flightLayer = L.layerGroup().addTo(mapState.view);
+  M2Mapper.attach(mapState.view);
   mapState.pulseOn = false;
   mapState.pulseTimer = setInterval(mapPulse, 850);
   updateMapView();
@@ -414,6 +416,7 @@ function mapFade(markers, ms = 500) {
 }
 function mapCancelFlight(keepRecording) {
   if (!keepRecording) mapRecCancel();
+  M2Mapper.suspend(false);                        // zasięg z mappera wraca po locie
   if (!mapState.flight) return;
   mapState.flight.cancelled = true; mapState.flight = null;
   if (mapState.view) { mapState.view.options.zoomSnap = 1; mapSmooth(mapState.view, false); }
@@ -447,6 +450,7 @@ async function mapLongestClicked() {
 /** Kadr przed nagraniem: sieć i kropki bez niebieskiej trasy, widok na START (nagranie nie pokaże gotowej trasy). */
 function mapFlightPrepare(route, edges) {
   const view = mapState.view; if (!view || !mapState.fullscreen) return;
+  M2Mapper.suspend(true);
   mapCancelFlight(true);
   mapState.flight = { cancelled: false, preparing: true }; mapUpdatePanel();
   view.invalidateSize();
@@ -531,6 +535,7 @@ function mapFlightMove(view, lat, lon, zoom) {
 
 async function mapFly(route, edges, onFinished) {
   mapCancelFlight(true);
+  M2Mapper.suspend(true);                         // w locie bez zasięgu i repeaterów mappera
   const flight = { cancelled: false }; mapState.flight = flight; mapUpdatePanel();
   const view = mapState.view, layer = mapState.layer, badges = mapState.flightLayer;
   const alive = () => !flight.cancelled && mapState.view === view;
@@ -586,7 +591,7 @@ async function mapFly(route, edges, onFinished) {
     await sleep(4000); if (!alive()) return;
     await sleep(250); if (!alive()) return;
     onFinished?.();
-    mapState.flight = null; mapSmooth(view, false);
+    mapState.flight = null; mapSmooth(view, false); M2Mapper.suspend(false);
     if (compass) compass.hidden = true;
     badges.clearLayers(); updateMapView();
   } finally {

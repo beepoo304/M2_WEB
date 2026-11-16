@@ -597,6 +597,13 @@ body.map-fs-on #map-canvas .leaflet-bottom { bottom:0; }
 .m2-zoom button+button { border-top:1px solid #ffffff2a; }
 .m2-zoom button:hover { background:#ffffff1a; }
 .m2-map.fs .m2-zoom { display:none; }
+.m2-mapper { position:absolute; z-index:550; top:185px; right:14px; display:flex; flex-direction:row-reverse; align-items:center; gap:8px; }
+.m2-mapper button { width:52px; height:40px; padding:0; border:0; border-radius:10px; background:#202327a0; color:#fff; font:600 10px/1 "Segoe UI",system-ui,sans-serif; letter-spacing:.2px; cursor:pointer; }
+.m2-mapper button:hover { background:#202327d0; }
+.m2-mapper button.on { background:#7e57c2; }
+.m2-mapper input { display:none; width:120px; accent-color:#7e57c2; padding:10px 8px; border-radius:10px; background:#202327a0; box-sizing:content-box; }
+.m2-mapper.on input { display:block; }
+.m2-map.fs .m2-mapper { display:none; }
 /* Text size: zoom treści ekranów (poza mapą), paneli mapy, dialogów i dolnego paska. */
 #screen > section:not(.m2-map), .map-panel, .dialog, .node-info-dialog, .packet-detail, .m2-toast, .nav-item { zoom:var(--m2-text-scale,1); }
 .settings-text-size { display:flex; align-items:center; gap:12px; margin:8px 0; }
@@ -604,3 +611,4 @@ body.map-fs-on #map-canvas .leaflet-bottom { bottom:0; }
 .settings-text-size b { min-width:46px; color:var(--primary); font-size:14px; }
 .settings-text-size { flex-wrap:wrap; } .settings-text-size input { min-width:0; }
 @media (max-width:640px) { .m2-zoom { top:auto; bottom:calc(158px + env(safe-area-inset-bottom)); } }
+@media (max-width:640px) { .m2-mapper { top:auto; bottom:calc(265px + env(safe-area-inset-bottom)); } }

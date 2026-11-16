@@ -1,0 +1,52 @@
+name: FTP deploy
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      clean:
+        description: 'Usun pliki na serwerze, ktorych nie ma w repo'
+        type: boolean
+        default: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sprawdz sekrety
+        if: ${{ secrets.FTP_HOST == '' || secrets.FTP_USER == '' || secrets.FTP_PASSWORD == '' }}
+        run: |
+          echo "Brak sekretow! Ustaw FTP_HOST, FTP_USER, FTP_PASSWORD w:"
+          echo "Settings -> Secrets and variables -> Actions"
+          exit 1
+
+      - name: Zainstaluj lftp
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lftp
+
+      - name: Deploy FTPS
+        env:
+          FTP_HOST: ${{ secrets.FTP_HOST }}
+          FTP_USER: ${{ secrets.FTP_USER }}
+          FTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+        run: |
+          lftp -u "$FTP_USER","$FTP_PASSWORD" "$FTP_HOST" <<'EOF'
+          set ftp:ssl-protect-data true
+          set net:max-retries 3
+          mirror -R -v --parallel 5 \
+            --exclude-glob .git/ \
+            --exclude-glob .github/ \
+            --exclude-glob test/ \
+            --exclude-glob node_modules/ \
+            --exclude-glob package.json \
+            --exclude-glob package-lock.json \
+            --exclude-glob dev-server.js \
+            --exclude-glob .gitignore \
+            --exclude-glob README.md \
+            --exclude-glob CHANGELOG.md \
+            --exclude-glob LICENSE \
+            . httpdoc
+          quit
+          EOF

@@ -906,10 +906,10 @@ async function loadPackets(manual = false) {
       try {
         const data=await fetchJson(apiProxyUrl('packets',{limit:'250',_:String(Date.now())},source));
         if(!Array.isArray(data.packets))throw new Error('Invalid packet-feed response');
-        recordApiHealth(source,true,Date.now()-startedAt);
+        recordApiHealth(source,true,startedAt);
         sourceFailures.delete(source);
         result={source,packets:data.packets};break;
-      } catch(error) { lastError=error; recordApiHealth(source,false,Date.now()-startedAt); noteSourceFailure(source); }
+      } catch(error) { lastError=error; recordApiHealth(source,false,startedAt); noteSourceFailure(source); }
     }
     if(!result)throw new Error(`${apiSources.length>1?'All configured APIs are unavailable':'API unavailable'}${lastError?.message?`: ${lastError.message}`:''}`);
     activeApiSource=result.source;
@@ -959,18 +959,66 @@ function updateLiveAges() {
   for(const [id,entry] of liveDom.rows){ const packet=byId.get(id); if(packet)setRowAge(entry.el,packet); }
 }
 // ---------- Log zdrowia API (port ApiHealthLogStore/ApiHealthMonitor) ----------
-const API_HEALTH_STORAGE='m2-web-api-health-v1';
+// Only outages are logged, per broker URL, newest 250, kept across restarts.
+const API_HEALTH_STORAGE='m2-web-api-health-v2';
+const API_HEALTH_LIMIT=250;
+const apiHealthBase=source=>String(source||'').trim().replace(/\/+$/,'');
 let apiHealthLog=loadApiHealthLog();
-function loadApiHealthLog() { try { const value=JSON.parse(sessionStorage.getItem(API_HEALTH_STORAGE)||'{}'); return value&&typeof value==='object'?value:{}; } catch { return {}; } }
-function saveApiHealthLog() { try { sessionStorage.setItem(API_HEALTH_STORAGE,JSON.stringify(apiHealthLog)); } catch {} }
-function recordApiHealth(source, ok, responseMs) {
-  const host=sourceLabel(source), entries=apiHealthLog[host]||[];
-  const status=ok?'ONLINE':'OFFLINE', last=entries[0];
-  if(last&&last.status===status){ last.last=Date.now(); last.response=responseMs; last.checks=(last.checks||1)+1; }
-  else entries.unshift({ start:Date.now(), last:Date.now(), status, response:responseMs, checks:1, ongoing:true });
-  apiHealthLog[host]=entries.slice(0,250); saveApiHealthLog();
+const apiHealthOnline=new Map(), apiHealthLastRequest=new Map(), apiHealthDue=new Map();
+function loadApiHealthLog() {
+  try {
+    const value=JSON.parse(localStorage.getItem(API_HEALTH_STORAGE)||'{}');
+    if(!value||typeof value!=='object')return {};
+    for(const base of Object.keys(value))value[base]=(Array.isArray(value[base])?value[base]:[]).slice(0,API_HEALTH_LIMIT);
+    return value;
+  } catch { return {}; }
 }
-function resetApiHealthLog(source) { delete apiHealthLog[sourceLabel(source)]; saveApiHealthLog(); }
+function saveApiHealthLog() { try { localStorage.setItem(API_HEALTH_STORAGE,JSON.stringify(apiHealthLog)); } catch {} }
+/** Ignore late results of older requests; Live and probes publish into the same history. */
+function recordApiHealth(source, online, started) {
+  const base=apiHealthBase(source);
+  if(started<(apiHealthLastRequest.get(base)??-Infinity))return;
+  apiHealthLastRequest.set(base,started);
+  const previous=apiHealthLog[base]||[], checked=Date.now(), first=previous[0];
+  let entries=previous;
+  if(!online&&first?.ongoing)entries=[{...first,last:checked,checks:first.checks+1},...previous.slice(1)];
+  else if(!online)entries=[{start:started,last:checked,status:'API down',response:checked-started,checks:1,ongoing:true},...previous].slice(0,API_HEALTH_LIMIT);
+  else if(first?.ongoing)entries=[{...first,last:checked,ongoing:false},...previous.slice(1)];
+  if(entries!==previous){ apiHealthLog[base]=entries; saveApiHealthLog(); }
+  const wasOnline=apiHealthOnline.get(base);
+  apiHealthOnline.set(base,online);
+  if((entries!==previous||wasOnline!==online)&&settingsApiLogOpen&&currentScreen()==='Settings'&&base===apiHealthBase(activeApiSource))renderSettings();
+}
+function resetApiHealthLog(source) { apiHealthLog[apiHealthBase(source)]=[]; saveApiHealthLog(); }
+/** ApiHealthMonitor.start: probe every saved API (limit 1) every 5 s, every 3 min once an outage lasts 30 s. */
+async function probeApiHealth(source) {
+  const base=apiHealthBase(source), started=Date.now();
+  try {
+    const data=await fetchJson(apiProxyUrl('packets',{limit:'1',_:String(started)},source));
+    if(!Array.isArray(data.packets))throw new Error('Missing packets array');
+    recordApiHealth(source,true,started);
+  } catch { recordApiHealth(source,false,started); }
+  const outage=(apiHealthLog[base]||[])[0];
+  const prolonged=apiHealthOnline.get(base)===false&&outage?.ongoing&&Date.now()-outage.start>=30_000;
+  apiHealthDue.set(base,Date.now()+(prolonged?180_000:5_000));
+}
+setInterval(()=>{
+  if(appClosed)return;
+  const now=Date.now();
+  for(const source of new Set(apiSources.map(apiHealthBase))){
+    if(now<(apiHealthDue.get(source)??0))continue;
+    apiHealthDue.set(source,Infinity);
+    probeApiHealth(source);
+  }
+},1000);
+function apiLogTime(value) {
+  const d=new Date(value), p=n=>String(n).padStart(2,'0');
+  return `${p(d.getDate())}.${p(d.getMonth()+1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function apiDuration(value) {
+  const seconds=Math.floor(Math.max(0,value)/1000), hours=Math.floor(seconds/3600), minutes=Math.floor(seconds%3600/60), rest=seconds%60, p=n=>String(n).padStart(2,'0');
+  return hours>0?`${hours}h ${p(minutes)}m ${p(rest)}s`:`${minutes}m ${p(rest)}s`;
+}
 
 // ---------- Zamknięcie aplikacji (odpowiednik Close application z Androida) ----------
 let appClosed=false;
@@ -985,9 +1033,10 @@ function closeApplication() {
 }
 let settingsApiLogOpen=false;
 function renderApiLogDialog() {
-  const entries=apiHealthLog[sourceLabel(activeApiSource)]||[];
-  const rows=entries.map(entry=>`<div class="api-log-row ${entry.status==='ONLINE'?'online':'offline'}"><b>${entry.status}</b><span>${escapeHtml(new Intl.DateTimeFormat('pl-PL',{timeZone:'Europe/Warsaw',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(entry.start))} – ${escapeHtml(new Intl.DateTimeFormat('pl-PL',{timeZone:'Europe/Warsaw',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(entry.last))}</span><span>${Number(entry.response)||0} ms · ${Number(entry.checks||1)} checks</span></div>`).join('');
-  return `<div class="dialog-backdrop" id="api-log-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-label="API log"><h3>API log · ${escapeHtml(sourceLabel(activeApiSource))}</h3><div class="api-log-list">${rows||'<div class="empty-feed">No checks recorded yet.</div>'}</div><div class="dialog-actions"><button type="button" class="danger-link" id="api-log-reset">Reset</button><button type="button" class="dialog-cancel" id="api-log-close">Close</button></div></section></div>`;
+  const base=apiHealthBase(activeApiSource), entries=apiHealthLog[base]||[], online=apiHealthOnline.get(base);
+  const status=online===true?['online','API ONLINE']:online===false?['offline','API DOWN']:['checking','CHECKING API…'];
+  const rows=entries.map(entry=>`<div class="api-log-row"><b class="api-log-down">API DOWN  ${escapeHtml(apiLogTime(entry.start))}</b><span class="${entry.ongoing?'api-log-down':'api-log-restored'}">${entry.ongoing?'Still down':`API RESTORED  ${escapeHtml(apiLogTime(entry.last))}`}</span><span class="api-log-duration">Duration: ${apiDuration(entry.last-entry.start)}</span><small>${escapeHtml(entry.status)}</small></div>`).join('');
+  return `<div class="dialog-backdrop" id="api-log-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-label="Live API log"><h3>LIVE API LOG</h3><p class="api-log-base">${escapeHtml(activeApiSource)}</p><p class="api-log-status ${status[0]}">${status[1]}</p><p class="api-log-note">Checked every 60 seconds · every 15 seconds during an outage</p><div class="api-log-list">${rows||'<div class="empty-feed">No API outages recorded</div>'}</div><div class="dialog-actions"><button type="button" class="danger-link" id="api-log-reset">RESET LOG</button><button type="button" class="dialog-cancel" id="api-log-close">Close</button></div></section></div>`;
 }
 function renderSettings() {
   screen.innerHTML = `<section class="settings-screen"><div class="eyebrow">PERSONALIZE M²</div><h1>Settings</h1><section class="api-settings"><div class="settings-heading"><h2>Packet APIs</h2><button type="button" id="open-api-log">Log</button></div><p class="settings-intro">The app tries these APIs in order. If the first one is unavailable, it switches automatically to the next working source.</p><div class="api-source-list">${apiSources.map((source,index)=>`<div class="api-source-row"><span class="api-order">${index+1}</span><code>${escapeHtml(source)}</code>${source===activeApiSource?'<b class="api-active-badge">ACTIVE</b>':''}<button type="button" data-primary-api="${index}" ${index===0?'disabled':''}>Make primary</button>${apiSources.length>1?`<button type="button" data-remove-api="${index}" aria-label="Remove API ${escapeHtml(source)}">Remove</button>`:''}</div>`).join('')}</div><div class="api-add-form"><label for="api-source-input">Add API base URL</label><div><input id="api-source-input" type="url" autocomplete="url" placeholder="https://api.example.org"><button id="add-api-source" type="button">Add API</button></div><p id="api-source-error" class="form-error" role="status" aria-live="polite"></p></div></section><section class="refresh-settings"><h2>Live refresh interval</h2><p class="settings-intro">Choose how often the packet feed is checked. The countdown next to LIVE follows this interval.</p><label for="refresh-interval">Refresh every</label><select id="refresh-interval">${REFRESH_OPTIONS.map(value=>`<option value="${value}" ${value===refreshIntervalMs?'selected':''}>${formatRefreshInterval(value)}</option>`).join('')}</select></section><section class="tracked-settings"><h2>Tracked keys</h2><p class="settings-intro">Add a full public key to recognize it in packet sources, observers and recorded routes.</p><div class="key-form"><label>Public key · 64 hex characters<input id="tracked-key" autocomplete="off" spellcheck="false" placeholder="Paste the full public key" maxlength="64"></label><button class="add-key-button" id="add-tracked-key" type="button">Add key</button><div id="key-form-error" class="form-error" role="status" aria-live="polite"></div></div><div class="key-storage-note"><span>SESSION ONLY</span> Keys and names are kept only for this browser session. Packet counts below use the loaded feed (${liveState.packets.length} of 250 packets).</div><div class="tracked-key-list"><div class="keys-heading"><strong>Saved keys</strong><span>${trackedKeys.length}</span></div>${trackedKeys.length?trackedKeys.map((item,index)=>`<div class="tracked-key-row"><div><strong>${escapeHtml(item.name||'Name unavailable')}</strong><code>${escapeHtml(item.key)}</code><small class="tracked-packet-count">${packetCountForTrackedKey(item.key)} matching packets in loaded feed</small></div><button type="button" data-remove-key="${index}" aria-label="Remove ${escapeHtml(item.name||'key')}">Remove</button></div>`).join(''):'<div class="empty-keys">No tracked keys yet.</div>'}</div></section><section class="about-settings"><h2>About M²</h2><p class="settings-intro">Exports (my log, maps) are saved to your browser's download folder. Channel keys never leave this browser.</p><a class="settings-link" href="https://ko-fi.com/beepoo304" target="_blank" rel="noopener noreferrer">Support M² on Ko-fi — ko-fi.com/beepoo304</a><a class="settings-link" href="https://github.com/beepoo304/M2_WEB" target="_blank" rel="noopener noreferrer">Open source on GitHub — github.com/beepoo304/M2_WEB</a><p class="version-note">M² Web version 0.3.0</p><button type="button" id="close-application" class="danger-button">Close application</button><p class="settings-intro">Stops background listening and closes M².</p></section></section>${settingsApiLogOpen?renderApiLogDialog():''}`;

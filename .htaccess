@@ -1,0 +1,6 @@
+# Przeglądarka zawsze sprawdza, czy jest nowa wersja strony (bez starej mapy z pamięci podręcznej).
+<IfModule mod_headers.c>
+  <FilesMatch "\.(html|js|css|php)$">
+    Header set Cache-Control "no-cache, must-revalidate"
+  </FilesMatch>
+</IfModule>

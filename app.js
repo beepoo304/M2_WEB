@@ -787,52 +787,70 @@ function mergeFeedPackets(incoming) {
   }
   return result;
 }
+// Kolejka szczegółów obserwacji: nowe/zmienione pakiety mają pierwszeństwo przed odświeżeniem po 30 s,
+// pracujące wątki biorą zawsze najświeższą listę z feedu, a wynik trafia na ekran od razu (jak w M² po 1–2 s),
+// a nie dopiero po przejściu całej listy.
+let enrichLatest=null, enrichApplyTimer=0;
+const enrichInFlight=new Set();
+function enrichNextCandidate() {
+  const {packets}=enrichLatest, now=Date.now();
+  let stale=null;
+  for(const packet of packets){
+    const id=String(packet.id);
+    if(enrichInFlight.has(id))continue;
+    if(!(Number(packet.observation_count||1)>1 || matchesForPacket(packet).length>0))continue;
+    const cached=observationMatchCache.get(id);
+    if(!cached || (!cached.failedAt && cached.observationCount!==Number(packet.observation_count||1))) return packet;
+    if(!stale && now-(cached.failedAt||cached.checkedAt)>=OBSERVATION_CACHE_MS) stale=packet;
+  }
+  return stale;
+}
+function enrichScheduleApply() {
+  if(enrichApplyTimer)return;
+  enrichApplyTimer=setTimeout(()=>{
+    enrichApplyTimer=0;
+    const {packets,source}=enrichLatest;
+    if(source!==activeApiSource)return;
+    // A route discovered only in the observation details counts for a saved key
+    // exactly once, just like a direct source/observer match.
+    recordTrackedPacketCounters(packets);
+    updateMyLog(packets);
+    mapIngest();
+    if(currentScreen()==='Live') refreshLiveList();
+    if(currentScreen()==='Map' && typeof updateMapView === 'function') updateMapView();
+  },250);
+}
 async function enrichPacketObservations(packets, source) {
-  if(!trackedKeys.length||enrichRunning) return;
+  if(!trackedKeys.length) return;
+  if(enrichLatest&&enrichLatest.source!==source) enrichInFlight.clear();
+  enrichLatest={packets,source};
+  const activeIds=new Set(packets.map(packet=>String(packet.id)));
+  [...observationMatchCache.keys()].forEach(id=>{if(!activeIds.has(id))observationMatchCache.delete(id);});
+  if(enrichRunning) return;            // trwające wątki same podejmą nowe pakiety
   enrichRunning=true;
-  let fetched=0;
   try {
     const savedDirectory=gpsDirectoryCache.get(source);
     if(!savedDirectory || Date.now()-savedDirectory.loadedAt>=GPS_DIRECTORY_CACHE_MS) {
       try {
         const data=await fetchJson(apiProxyUrl('directory',{},source));
-        if(Array.isArray(data.nodes)) { gpsDirectoryCache.set(source,{loadedAt:Date.now(),nodes:data.nodes}); fetched++; }
+        if(Array.isArray(data.nodes)) { gpsDirectoryCache.set(source,{loadedAt:Date.now(),nodes:data.nodes}); enrichScheduleApply(); }
       } catch { /* A missing directory simply suppresses the NO GPS marker. */ }
     }
-    const activeIds=new Set(packets.map(packet=>String(packet.id)));
-    [...observationMatchCache.keys()].forEach(id=>{if(!activeIds.has(id))observationMatchCache.delete(id);});
-    const now=Date.now();
-    const candidates=packets.filter(packet=>Number(packet.observation_count||1)>1 || matchesForPacket(packet).length>0).filter(packet=>{
-      const cached=observationMatchCache.get(String(packet.id));
-      if(!cached)return true;
-      if(cached.failedAt)return now-cached.failedAt>=OBSERVATION_CACHE_MS;
-      return cached.observationCount!==Number(packet.observation_count||1) || now-cached.checkedAt>=OBSERVATION_CACHE_MS;
-    });
-    let next=0;
     async function worker(){
-      while(next<candidates.length){
-        const packet=candidates[next++];
-        const previous=observationMatchCache.get(String(packet.id));
+      for(let packet=enrichNextCandidate(); packet && !appClosed; packet=enrichNextCandidate()){
+        const id=String(packet.id), src=enrichLatest.source, previous=observationMatchCache.get(id);
+        enrichInFlight.add(id);
         try {
-          const raw=await fetchJson(apiProxyUrl('packet',{id:String(packet.id)},source));
-          observationMatchCache.set(String(packet.id),{observationCount:Number(packet.observation_count||1),checkedAt:Date.now(),data:{...raw,loadSucceeded:true}});
-          fetched++;
+          const raw=await fetchJson(apiProxyUrl('packet',{id},src));
+          if(src===enrichLatest.source){ observationMatchCache.set(id,{observationCount:Number(packet.observation_count||1),checkedAt:Date.now(),data:{...raw,loadSucceeded:true}}); enrichScheduleApply(); }
         } catch {
           // Negative cache: keep any earlier good data, but do not retry for 30 s.
-          observationMatchCache.set(String(packet.id),previous?.data?{...previous,checkedAt:Date.now()}:{observationCount:Number(packet.observation_count||1),checkedAt:Date.now(),failedAt:Date.now()});
-        }
+          observationMatchCache.set(id,previous?.data?{...previous,checkedAt:Date.now()}:{observationCount:Number(packet.observation_count||1),checkedAt:Date.now(),failedAt:Date.now()});
+        } finally { enrichInFlight.delete(id); }
       }
     }
-    await Promise.all(Array.from({length:Math.min(MAX_OBSERVATION_REQUESTS,candidates.length)},worker));
+    await Promise.all(Array.from({length:MAX_OBSERVATION_REQUESTS},worker));
   } finally { enrichRunning=false; }
-  if(!fetched)return;
-  // A route discovered only in the observation details counts for a saved key
-  // exactly once, just like a direct source/observer match.
-  recordTrackedPacketCounters(packets);
-  updateMyLog(packets);
-  mapIngest();
-  if(source===activeApiSource && currentScreen()==='Live') refreshLiveList();
-  if(source===activeApiSource && currentScreen()==='Map' && typeof updateMapView === 'function') updateMapView();
 }
 async function loadPackets(manual = false) {
   if (liveState.loading || appClosed) return;

@@ -1,5 +1,11 @@
 # ChangeLog
 
+## [0.5.2] - 2026-11-16
+### Fixed
+- Mapa: pakiety nowe dla sesji mapy zawsze pobierają szczegóły obserwacji (jak collectPacket w M² Android) — koniec gubienia tras pakietów z 1 obserwacją bez dopasowań na poziomie pakietu.
+- Mapa: usunięty wyścig na starej migawce cache — detale wchłaniane tylko przy zgodności z bieżącym licznikiem obserwacji.
+- Mapa: szybszy retry po błędzie pobrania szczegółów (5 s zamiast 30 s).
+
 ## [0.5.1] - 2026-11-16
 ### Fixed
 - Mapa: liczniki Routes/Links zgodne z M² Android — jedno zdarzenie na unikalną ścieżkę pakietu (bez mnożenia przez obserwatorów), zdarzenia pakietu podmieniane przy nowych obserwacjach, brak fallbacku bez szczegółów obserwacji.

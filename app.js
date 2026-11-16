@@ -139,12 +139,12 @@ function observationRoutes(data) {
 }
 function enhancedMatches(packet) {
   const cached=observationMatchCache.get(String(packet.id));
-  const routeMatches=cached?.data?.loadSucceeded ? observationRoutes(cached.data).filter(route=>route.path.every(reliableHash)).map(route=>relationMatches({...packet,path_json:JSON.stringify(route.path),resolved_path:route.resolved,observer_id:route.observer.observer_id})) : [];
+  const routeMatches=cached?.data?.loadSucceeded ? observationRoutes(cached.data).filter(route=>route.path.every(reliableHash)).map(route=>relationMatches({...packet,_parsedPath:route.path,path_json:JSON.stringify(route.path),resolved_path:route.resolved,observer_id:route.observer.observer_id})) : [];
   return mergeMatches(matchesForPacket(packet),routeMatches);
 }
 function routeEventExists(packet, route, key) {
   if(!route.path.every(reliableHash)) return false;
-  const relations=relationMatches({...packet,path_json:JSON.stringify(route.path),resolved_path:route.resolved,observer_id:route.observer.observer_id});
+  const relations=relationMatches({...packet,_parsedPath:route.path,path_json:JSON.stringify(route.path),resolved_path:route.resolved,observer_id:route.observer.observer_id});
   const own=relations.filter(match=>match.key.toLowerCase()===String(key).toLowerCase());
   const has=relation=>own.some(match=>match.relation===relation);
   const accepted=has(trackedRelations.source)||has(trackedRelations.end)||has(trackedRelations.route)||has(trackedRelations.observer)||(has(trackedRelations.reply)&&relations.some(match=>match.relation===trackedRelations.observer));
@@ -213,7 +213,8 @@ function relationLabels(matches) {
 
 function loadTrackedKeys() {
   try {
-    const parsed=JSON.parse(sessionStorage.getItem(KEY_STORAGE)||'[]');
+    // Jak M² (DataStore): zapisane klucze przetrwają zamknięcie karty; stary zapis sesyjny przenosimy.
+    const parsed=JSON.parse(localStorage.getItem(KEY_STORAGE)||sessionStorage.getItem(KEY_STORAGE)||'[]');
     const now=Date.now();
     return Array.isArray(parsed) ? parsed.filter(item=>item&&/^[a-f\d]{64}$/i.test(item.key||'')).map(item=>({
       key:item.key.toUpperCase(),
@@ -225,7 +226,7 @@ function loadTrackedKeys() {
   }
   catch { return []; }
 }
-function saveTrackedKeys() { sessionStorage.setItem(KEY_STORAGE,JSON.stringify(trackedKeys)); window.M2Stats?.keysChanged(trackedKeys); }
+function saveTrackedKeys() { try { localStorage.setItem(KEY_STORAGE,JSON.stringify(trackedKeys)); } catch {} window.M2Stats?.keysChanged(trackedKeys); }
 // M² OwnTrafficLogStore: the 250-entry log survives restarts and Clear only
 // moves the cut-off (clearedAt), so older packets never come back.
 const MY_LOG_CLEARED_STORAGE = 'm2-web-own-traffic-cleared-v1';
@@ -457,7 +458,7 @@ function normalizeApiSource(value) {
 }
 function loadApiSources() {
   try {
-    const saved=JSON.parse(sessionStorage.getItem(API_STORAGE)||'null');
+    const saved=JSON.parse(localStorage.getItem(API_STORAGE)||sessionStorage.getItem(API_STORAGE)||'null');
     if(Array.isArray(saved)){
       const clean=saved.map(normalizeApiSource).filter(Boolean);
       if(clean.length){
@@ -468,9 +469,9 @@ function loadApiSources() {
   } catch {}
   return ['https://mc.inside.net.pl', 'https://live.meshcorekk.xyz', 'https://analyzer.marwoj.net'];
 }
-function saveApiSources() { sessionStorage.setItem(API_STORAGE,JSON.stringify(apiSources)); sessionStorage.setItem(ACTIVE_API_STORAGE,activeApiSource||apiSources[0]); }
+function saveApiSources() { try { localStorage.setItem(API_STORAGE,JSON.stringify(apiSources)); localStorage.setItem(ACTIVE_API_STORAGE,activeApiSource||apiSources[0]); } catch {} }
 function loadActiveApiSource() {
-  const saved=normalizeApiSource(sessionStorage.getItem(ACTIVE_API_STORAGE)||'');
+  const saved=normalizeApiSource(localStorage.getItem(ACTIVE_API_STORAGE)||sessionStorage.getItem(ACTIVE_API_STORAGE)||'');
   if(saved&&!apiSources.includes(saved))apiSources.push(saved);
   return saved||apiSources[0];
 }

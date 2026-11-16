@@ -13,6 +13,21 @@ header("Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-in
 const M2_ADMIN_IDLE = 1800;
 const M2_ADMIN_MAX_FAILS = 5;
 const M2_ADMIN_LOCK = 900;
+const M2_ADMIN_SECTIONS = [
+    'tiles' => 'Podsumowanie', 'chart' => 'Wejścia dzień po dniu', 'keys' => 'Najczęściej sprawdzane klucze',
+    'countries' => 'Kraje', 'cities' => 'Miasta', 'screens' => 'Zakładki', 'referrers' => 'Skąd przyszli',
+    'devices' => 'Urządzenia', 'browsers' => 'Przeglądarki', 'channels' => 'Dodawane kanały publiczne',
+    'resources' => 'Zapytania API wg rodzaju', 'sources' => 'Źródła danych API', 'toperrors' => 'Najczęstsze błędy',
+    'errors' => 'Ostatnie błędy',
+];
+
+/** Wyczyszczenie sekcji = zapamiętany moment; sekcja pokazuje tylko nowsze dane (pozostałe sekcje bez zmian). */
+function m2_admin_cuts(?array $save = null): array {
+    $file = m2_stats_dir() . '/cuts.json';
+    if ($save !== null) { @file_put_contents($file, json_encode($save), LOCK_EX); return $save; }
+    $cuts = is_file($file) ? json_decode((string) file_get_contents($file), true) : [];
+    return is_array($cuts) ? $cuts : [];
+}
 
 $https = ($_SERVER['HTTPS'] ?? '') !== '' && ($_SERVER['HTTPS'] ?? '') !== 'off';
 session_name('m2admin');
@@ -63,6 +78,28 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             usleep(400000);
             $loginError = 'Nieprawidłowy login lub hasło.';
         }
+    } elseif ($action === 'clear' && !empty($_SESSION['admin']) && $db) {
+        $section = (string) ($_POST['section'] ?? '');
+        $back = '?p=' . rawurlencode((string) ($_POST['p'] ?? '7'));
+        $fails = $db->prepare('SELECT COUNT(*) FROM m2_logins WHERE iphash = ? AND ok = 0 AND ts > ?');
+        $fails->execute([$ipHash, time() - M2_ADMIN_LOCK]);
+        if ((int) $fails->fetchColumn() >= M2_ADMIN_MAX_FAILS) {
+            $_SESSION['flash'] = ['bad', 'Zbyt wiele błędnych haseł. Spróbuj ponownie za 15 minut.'];
+        } elseif (!password_verify((string) ($_POST['password'] ?? ''), (string) $config['admin_hash'])) {
+            $db->prepare('INSERT INTO m2_logins (ts, iphash, ok) VALUES (?, ?, ?)')->execute([time(), $ipHash, 0]);
+            usleep(400000);
+            $_SESSION['flash'] = ['bad', 'Błędne hasło — nic nie zostało wyczyszczone.'];
+        } elseif ($section === 'all') {
+            $db->exec('DELETE FROM m2_events');
+            m2_admin_cuts([]);
+            $_SESSION['flash'] = ['ok', 'Wyczyszczono wszystkie statystyki.'];
+        } elseif (isset(M2_ADMIN_SECTIONS[$section])) {
+            $cuts = m2_admin_cuts();
+            $cuts[$section] = time();
+            m2_admin_cuts($cuts);
+            $_SESSION['flash'] = ['ok', 'Wyczyszczono sekcję „' . M2_ADMIN_SECTIONS[$section] . '”.'];
+        }
+        header('Location: ./' . $back); exit;
     }
 }
 
@@ -84,7 +121,25 @@ header h1 { margin:0; font-size:16px; letter-spacing:.02em; }
 header .spacer { flex:1; }
 main { max-width:1200px; margin:0 auto; padding:18px; }
 .periods a { display:inline-block; padding:6px 12px; border:1px solid var(--outline); border-radius:999px; text-decoration:none; color:var(--muted); margin-right:4px; }
-.periods a.on { color:#06210f; background:var(--primary); border-color:var(--primary); font-weight:600; }
+.periods a:hover { color:var(--text); border-color:var(--muted); }
+.periods a.on { color:#06210f; background:var(--primary); border-color:var(--primary); font-weight:700; box-shadow:0 0 0 2px rgba(66,212,123,.35); }
+.range { color:var(--muted); margin-bottom:10px; }
+.range b { color:var(--primary); }
+.flash { padding:10px 14px; border-radius:10px; margin-bottom:12px; border:1px solid; }
+.flash.ok { color:var(--primary); border-color:var(--primary); background:rgba(66,212,123,.08); }
+.flash.bad { color:var(--red); border-color:var(--red); background:rgba(255,101,101,.08); }
+.sechead h2 { margin:0 0 8px; font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); display:flex; gap:8px; align-items:center; }
+h2 .tools { margin-left:auto; display:flex; gap:6px; align-items:center; text-transform:none; letter-spacing:0; }
+details.clear { position:relative; }
+details.clear summary { list-style:none; cursor:pointer; border:1px solid var(--outline); background:var(--variant); color:var(--red); border-radius:9px; padding:4px 9px; font:600 11px "Segoe UI",system-ui,sans-serif; }
+header details.clear summary { padding:7px 12px; font-size:13px; }
+details.clear summary::-webkit-details-marker { display:none; }
+details.clear[open] summary { border-color:var(--red); }
+details.clear .pop { position:absolute; right:0; top:calc(100% + 6px); z-index:5; width:280px; background:var(--surface); border:1px solid var(--red); border-radius:12px; padding:12px; box-shadow:0 8px 24px rgba(0,0,0,.5); font:13px/1.4 "Segoe UI",system-ui,sans-serif; color:var(--text); }
+details.clear .pop p { margin:0 0 8px; color:var(--orange); }
+details.clear .pop label { display:block; color:var(--muted); font-size:12px; margin-bottom:8px; }
+details.clear .pop input { display:block; width:100%; margin-top:4px; padding:8px 10px; border-radius:8px; border:1px solid var(--outline); background:var(--bg); color:var(--text); }
+button.danger { width:100%; background:var(--red); color:#2a0606; border-color:var(--red); }
 button,.btn { border:1px solid var(--outline); background:var(--variant); color:var(--primary); border-radius:9px; padding:7px 12px; font:600 13px inherit; cursor:pointer; text-decoration:none; }
 .tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:10px; margin-bottom:18px; }
 .tile { background:var(--surface); border:1px solid var(--outline); border-radius:12px; padding:12px 14px; }
@@ -92,7 +147,8 @@ button,.btn { border:1px solid var(--outline); background:var(--variant); color:
 .tile b { display:block; font-size:24px; margin-top:4px; }
 .tile.bad b { color:var(--red); }
 .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:14px; }
-section.card { background:var(--surface); border:1px solid var(--outline); border-radius:12px; padding:12px 14px; margin-bottom:14px; overflow:auto; }
+section.card { background:var(--surface); border:1px solid var(--outline); border-radius:12px; padding:12px 14px; margin-bottom:14px; overflow:visible; }
+@media (max-width:760px) { section.card table { display:block; overflow-x:auto; } }
 section.card h2 { margin:0 0 10px; font-size:13px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); display:flex; gap:8px; align-items:center; }
 section.card h2 .btn { margin-left:auto; font-size:11px; padding:4px 9px; text-transform:none; letter-spacing:0; }
 table { width:100%; border-collapse:collapse; font-size:13px; }
@@ -113,8 +169,9 @@ td.msg { color:var(--orange); overflow-wrap:anywhere; min-width:200px; }
 .login input { display:block; width:100%; margin-top:4px; padding:10px 12px; border-radius:9px; border:1px solid var(--outline); background:var(--bg); color:var(--text); font-size:15px; }
 .login button { width:100%; padding:11px; background:var(--primary); color:#06210f; border:0; font-size:15px; }
 .error { color:var(--red); margin-bottom:12px; }
-.filters a { margin-right:10px; font-size:12px; }
-.filters a.on { color:var(--text); font-weight:600; text-decoration:none; }
+.filters { margin-bottom:8px; }
+.filters a { display:inline-block; margin-right:6px; font-size:12px; padding:4px 10px; border:1px solid var(--outline); border-radius:999px; color:var(--muted); text-decoration:none; }
+.filters a.on { color:#06210f; background:var(--primary); border-color:var(--primary); font-weight:700; }
 footer { color:var(--muted); font-size:12px; text-align:center; padding:20px; }
 </style>
 </head>
@@ -147,6 +204,10 @@ if (!$db) { page_start('M² · statystyki'); echo '<main><div class="error">Brak
 $periods = ['1' => 'Dziś', '7' => '7 dni', '30' => '30 dni', '0' => 'Wszystko'];
 $period = array_key_exists((string) ($_GET['p'] ?? '7'), $periods) ? (string) ($_GET['p'] ?? '7') : '7';
 $since = $period === '0' ? 0 : strtotime('today -' . ((int) $period - 1) . ' days');
+$cuts = m2_admin_cuts();
+$periodText = $period === '0' ? 'Wszystkie zapisane dane' : ($period === '1' ? 'Dziś · ' . date('d.m.Y') : $periods[$period] . ' · ' . date('d.m', $since) . '–' . date('d.m.Y'));
+function since_for(string $section): int { global $since, $cuts; return max($since, (int) ($cuts[$section] ?? 0)); }
+function sv(string $section): array { return [since_for($section)]; }
 $errFilter = in_array($_GET['err'] ?? '', ['api', 'js'], true) ? $_GET['err'] : 'all';
 
 function q(string $sql, array $params = []): array {
@@ -161,9 +222,9 @@ $s = [$since];
 $topKeys = q("SELECT e.pkey, COUNT(DISTINCT e.vid) AS users, COUNT(*) AS sessions, MAX(e.ts) AS last,
     (SELECT x.pname FROM m2_events x WHERE x.kind = 'key' AND x.pkey = e.pkey AND x.pname IS NOT NULL AND x.pname <> '' ORDER BY x.ts DESC LIMIT 1) AS name,
     (SELECT COUNT(*) FROM m2_events y WHERE y.kind = 'api' AND y.pkey = e.pkey AND y.ts >= ?) AS lookups
-    FROM m2_events e WHERE e.kind = 'key' AND e.ts >= ? GROUP BY e.pkey ORDER BY users DESC, sessions DESC LIMIT 50", [$since, $since]);
+    FROM m2_events e WHERE e.kind = 'key' AND e.ts >= ? GROUP BY e.pkey ORDER BY users DESC, sessions DESC LIMIT 50", [since_for('keys'), since_for('keys')]);
 $errorWhere = $errFilter === 'api' ? "kind = 'api' AND status >= 400" : ($errFilter === 'js' ? "kind = 'jserror'" : "((kind = 'api' AND status >= 400) OR kind = 'jserror')");
-$errors = q("SELECT ts, kind, screen, resource, status, message, source, country, city, browser, device FROM m2_events WHERE $errorWhere AND ts >= ? ORDER BY ts DESC LIMIT 100", $s);
+$errors = q("SELECT ts, kind, screen, resource, status, message, source, country, city, browser, device FROM m2_events WHERE $errorWhere AND ts >= ? ORDER BY ts DESC LIMIT 100", sv('errors'));
 
 if (isset($_GET['export'])) {
     $type = (string) $_GET['export'];
@@ -187,37 +248,37 @@ if (isset($_GET['export'])) {
 }
 
 $tiles = [
-    'Wejścia' => one("SELECT COUNT(*) FROM m2_events WHERE kind = 'visit' AND ts >= ?", $s),
-    'Unikalni odwiedzający' => one("SELECT COUNT(DISTINCT vid) FROM m2_events WHERE kind IN ('visit','screen') AND ts >= ?", $s),
-    'Otwarcia zakładek' => one("SELECT COUNT(*) FROM m2_events WHERE kind = 'screen' AND ts >= ?", $s),
-    'Śledzone klucze' => one("SELECT COUNT(DISTINCT pkey) FROM m2_events WHERE kind = 'key' AND ts >= ?", $s),
-    'Zapytania API' => one("SELECT COALESCE(SUM(weight),0) FROM m2_events WHERE kind = 'api' AND ts >= ?", $s),
-    'Średni czas API' => round((float) one("SELECT COALESCE(SUM(ms*weight)*1.0/NULLIF(SUM(weight),0),0) FROM m2_events WHERE kind = 'api' AND status < 400 AND ts >= ?", $s)) . ' ms',
+    'Wejścia' => one("SELECT COUNT(*) FROM m2_events WHERE kind = 'visit' AND ts >= ?", sv('tiles')),
+    'Unikalni odwiedzający' => one("SELECT COUNT(DISTINCT vid) FROM m2_events WHERE kind IN ('visit','screen') AND ts >= ?", sv('tiles')),
+    'Otwarcia zakładek' => one("SELECT COUNT(*) FROM m2_events WHERE kind = 'screen' AND ts >= ?", sv('tiles')),
+    'Śledzone klucze' => one("SELECT COUNT(DISTINCT pkey) FROM m2_events WHERE kind = 'key' AND ts >= ?", sv('tiles')),
+    'Zapytania API' => one("SELECT COALESCE(SUM(weight),0) FROM m2_events WHERE kind = 'api' AND ts >= ?", sv('tiles')),
+    'Średni czas API' => round((float) one("SELECT COALESCE(SUM(ms*weight)*1.0/NULLIF(SUM(weight),0),0) FROM m2_events WHERE kind = 'api' AND status < 400 AND ts >= ?", sv('tiles'))) . ' ms',
 ];
-$apiErrors = (int) one("SELECT COUNT(*) FROM m2_events WHERE kind = 'api' AND status >= 400 AND ts >= ?", $s);
-$jsErrors = (int) one("SELECT COUNT(*) FROM m2_events WHERE kind = 'jserror' AND ts >= ?", $s);
+$apiErrors = (int) one("SELECT COUNT(*) FROM m2_events WHERE kind = 'api' AND status >= 400 AND ts >= ?", sv('tiles'));
+$jsErrors = (int) one("SELECT COUNT(*) FROM m2_events WHERE kind = 'jserror' AND ts >= ?", sv('tiles'));
 
 $chartDays = $period === '0' ? M2_STATS_RETENTION_DAYS : max(7, (int) $period);
 $daily = [];
 for ($i = $chartDays - 1; $i >= 0; $i--) $daily[date('Y-m-d', strtotime("today -$i days"))] = ['visits' => 0, 'unique' => 0, 'errors' => 0];
 foreach (q("SELECT day, SUM(CASE WHEN kind = 'visit' THEN 1 ELSE 0 END) AS visits, COUNT(DISTINCT CASE WHEN kind IN ('visit','screen') THEN vid END) AS uniq,
     SUM(CASE WHEN kind = 'jserror' OR (kind = 'api' AND status >= 400) THEN 1 ELSE 0 END) AS errors
-    FROM m2_events WHERE ts >= ? GROUP BY day", [strtotime('today -' . ($chartDays - 1) . ' days')]) as $r) {
+    FROM m2_events WHERE ts >= ? GROUP BY day", [max(strtotime('today -' . ($chartDays - 1) . ' days'), (int) ($cuts['chart'] ?? 0))]) as $r) {
     if (isset($daily[$r['day']])) $daily[$r['day']] = ['visits' => (int) $r['visits'], 'unique' => (int) $r['uniq'], 'errors' => (int) $r['errors']];
 }
 
-$countries = q("SELECT COALESCE(country,'?') AS label, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND ts >= ? GROUP BY country ORDER BY c DESC LIMIT 20", $s);
-$cities = q("SELECT city AS label, MAX(country) AS country, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND city IS NOT NULL AND ts >= ? GROUP BY city ORDER BY c DESC LIMIT 25", $s);
-$screens = q("SELECT screen AS label, COUNT(*) AS c FROM m2_events WHERE kind = 'screen' AND ts >= ? GROUP BY screen ORDER BY c DESC", $s);
-$referrers = q("SELECT referrer AS label, COUNT(*) AS c FROM m2_events WHERE kind = 'visit' AND referrer IS NOT NULL AND ts >= ? GROUP BY referrer ORDER BY c DESC LIMIT 20", $s);
-$devices = q("SELECT device AS label, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND ts >= ? GROUP BY device ORDER BY c DESC", $s);
-$browsers = q("SELECT browser AS label, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND ts >= ? GROUP BY browser ORDER BY c DESC", $s);
-$channels = q("SELECT pname AS label, COUNT(*) AS c FROM m2_events WHERE kind = 'channel' AND ts >= ? GROUP BY pname ORDER BY c DESC LIMIT 25", $s);
+$countries = q("SELECT COALESCE(country,'?') AS label, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND ts >= ? GROUP BY country ORDER BY c DESC LIMIT 20", sv('countries'));
+$cities = q("SELECT city AS label, MAX(country) AS country, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND city IS NOT NULL AND ts >= ? GROUP BY city ORDER BY c DESC LIMIT 25", sv('cities'));
+$screens = q("SELECT screen AS label, COUNT(*) AS c FROM m2_events WHERE kind = 'screen' AND ts >= ? GROUP BY screen ORDER BY c DESC", sv('screens'));
+$referrers = q("SELECT referrer AS label, COUNT(*) AS c FROM m2_events WHERE kind = 'visit' AND referrer IS NOT NULL AND ts >= ? GROUP BY referrer ORDER BY c DESC LIMIT 20", sv('referrers'));
+$devices = q("SELECT device AS label, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND ts >= ? GROUP BY device ORDER BY c DESC", sv('devices'));
+$browsers = q("SELECT browser AS label, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND ts >= ? GROUP BY browser ORDER BY c DESC", sv('browsers'));
+$channels = q("SELECT pname AS label, COUNT(*) AS c FROM m2_events WHERE kind = 'channel' AND ts >= ? GROUP BY pname ORDER BY c DESC LIMIT 25", sv('channels'));
 $sources = q("SELECT COALESCE(source,'?') AS source, SUM(weight) AS total, SUM(CASE WHEN status >= 400 THEN weight ELSE 0 END) AS bad,
     SUM(CASE WHEN status < 400 THEN ms*weight ELSE 0 END)*1.0/NULLIF(SUM(CASE WHEN status < 400 THEN weight ELSE 0 END),0) AS avgms,
-    MAX(CASE WHEN status < 400 THEN ms END) AS maxms FROM m2_events WHERE kind = 'api' AND ts >= ? GROUP BY source ORDER BY total DESC", $s);
-$resources = q("SELECT resource AS label, SUM(weight) AS c FROM m2_events WHERE kind = 'api' AND ts >= ? GROUP BY resource ORDER BY c DESC", $s);
-$topErrors = q("SELECT message AS label, COUNT(*) AS c FROM m2_events WHERE $errorWhere AND ts >= ? GROUP BY message ORDER BY c DESC LIMIT 10", $s);
+    MAX(CASE WHEN status < 400 THEN ms END) AS maxms FROM m2_events WHERE kind = 'api' AND ts >= ? GROUP BY source ORDER BY total DESC", sv('sources'));
+$resources = q("SELECT resource AS label, SUM(weight) AS c FROM m2_events WHERE kind = 'api' AND ts >= ? GROUP BY resource ORDER BY c DESC", sv('resources'));
+$topErrors = q("SELECT message AS label, COUNT(*) AS c FROM m2_events WHERE $errorWhere AND ts >= ? GROUP BY message ORDER BY c DESC LIMIT 10", sv('toperrors'));
 
 function ranking(array $rows, string $empty = 'Brak danych', ?callable $label = null): string {
     if (!$rows) return '<div class="empty">' . h($empty) . '</div>';
@@ -252,51 +313,69 @@ function chart(array $daily): string {
     return $svg . '</svg>';
 }
 
+function clear_btn(string $section): string {
+    global $period;
+    $what = $section === 'all' ? 'WSZYSTKIE statystyki zostaną trwale usunięte.' : 'Sekcja „' . M2_ADMIN_SECTIONS[$section] . '” zostanie wyczyszczona (pokaże tylko nowe dane).';
+    return '<details class="clear"><summary>' . ($section === 'all' ? 'Wyczyść wszystko' : 'Wyczyść') . '</summary><form method="post" class="pop">'
+        . '<input type="hidden" name="action" value="clear"><input type="hidden" name="section" value="' . h($section) . '">'
+        . '<input type="hidden" name="p" value="' . h($period) . '"><input type="hidden" name="csrf" value="' . h($_SESSION['csrf']) . '">'
+        . '<p>' . h($what) . '</p><label>Potwierdź hasłem administratora<input type="password" name="password" autocomplete="current-password" required></label>'
+        . '<button type="submit" class="danger">Wyczyść</button></form></details>';
+}
+function title(string $text, string $section, string $extra = ''): string {
+    return '<h2>' . h($text) . '<span class="tools">' . $extra . clear_btn($section) . '</span></h2>';
+}
+$flash = $_SESSION['flash'] ?? null; unset($_SESSION['flash']);
+
 page_start('M² · statystyki'); ?>
 <header>
   <h1>M² · statystyki strony</h1>
-  <nav class="periods"><?php foreach ($periods as $key => $label): ?><a href="?p=<?= h($key) ?>" class="<?= $key === $period ? 'on' : '' ?>"><?= h($label) ?></a><?php endforeach; ?></nav>
+  <nav class="periods"><?php foreach ($periods as $key => $label): $key = (string) $key; ?><a href="?p=<?= h($key) ?>" class="<?= $key === $period ? 'on' : '' ?>"<?= $key === $period ? ' aria-current="page"' : '' ?>><?= $key === $period ? '✓ ' : '' ?><?= h($label) ?></a><?php endforeach; ?></nav>
   <span class="spacer"></span>
   <a class="btn" href="?p=<?= h($period) ?>&amp;export=events">CSV: wszystkie zdarzenia</a>
+  <?= clear_btn('all') ?>
   <form method="post"><input type="hidden" name="action" value="logout"><input type="hidden" name="csrf" value="<?= h($_SESSION['csrf']) ?>"><button type="submit">Wyloguj</button></form>
 </header>
 <main>
+  <div class="range">Zakres: <b><?= h($periodText) ?></b></div>
+  <?php if ($flash): ?><div class="flash <?= h($flash[0]) ?>"><?= h($flash[1]) ?></div><?php endif; ?>
+  <div class="sechead"><?= title('Podsumowanie', 'tiles') ?></div>
   <div class="tiles">
     <?php foreach ($tiles as $label => $value): ?><div class="tile"><small><?= h($label) ?></small><b><?= is_numeric($value) ? n($value) : h($value) ?></b></div><?php endforeach; ?>
     <div class="tile <?= $apiErrors ? 'bad' : '' ?>"><small>Błędy API</small><b><?= n($apiErrors) ?></b></div>
     <div class="tile <?= $jsErrors ? 'bad' : '' ?>"><small>Błędy w przeglądarce</small><b><?= n($jsErrors) ?></b></div>
   </div>
 
-  <section class="card chart"><h2>Wejścia dzień po dniu</h2><?= chart($daily) ?>
+  <section class="card chart"><?= title('Wejścia dzień po dniu', 'chart') ?><?= chart($daily) ?>
     <div class="legend"><i style="background:#42d47b"></i>wejścia<i style="background:#2196f3"></i>unikalni<i style="background:#ff6565"></i>błędy</div></section>
 
-  <section class="card"><h2>Najczęściej sprawdzane klucze <a class="btn" href="?p=<?= h($period) ?>&amp;export=keys">CSV</a></h2>
+  <section class="card"><?= title('Najczęściej sprawdzane klucze', 'keys', '<a class="btn" href="?p=' . h($period) . '&amp;export=keys">CSV</a>') ?>
     <?php if (!$topKeys): ?><div class="empty">Brak danych</div><?php else: ?>
     <table><tr><th>#</th><th>Nazwa</th><th>Klucz</th><th class="num">Osoby</th><th class="num">Sesje</th><th class="num">Zapytania API</th><th class="num">Ostatnio</th></tr>
     <?php foreach ($topKeys as $i => $r): ?><tr><td><?= $i + 1 ?></td><td><?= h($r['name'] ?: '—') ?></td><td class="key" title="<?= h($r['pkey']) ?>"><?= h(strtoupper(substr($r['pkey'], 0, 4)) . ' · ' . substr($r['pkey'], 0, 12) . '…') ?></td><td class="num"><?= n($r['users']) ?></td><td class="num"><?= n($r['sessions']) ?></td><td class="num"><?= n($r['lookups']) ?></td><td class="num"><?= h(date('d.m H:i', (int) $r['last'])) ?></td></tr><?php endforeach; ?>
     </table><?php endif; ?></section>
 
   <div class="grid">
-    <section class="card"><h2>Kraje</h2><?= ranking($countries, 'Brak danych', static fn($r) => flag((string) $r['label']) . h($r['label'])) ?></section>
-    <section class="card"><h2>Miasta</h2><?= ranking($cities, 'Brak danych', static fn($r) => flag((string) $r['country']) . h($r['label'])) ?></section>
-    <section class="card"><h2>Zakładki</h2><?= ranking($screens) ?></section>
-    <section class="card"><h2>Skąd przyszli</h2><?= ranking($referrers, 'Brak — wejścia bezpośrednie') ?></section>
-    <section class="card"><h2>Urządzenia</h2><?= ranking($devices) ?></section>
-    <section class="card"><h2>Przeglądarki</h2><?= ranking($browsers) ?></section>
-    <section class="card"><h2>Dodawane kanały publiczne</h2><?= ranking($channels) ?></section>
-    <section class="card"><h2>Zapytania API wg rodzaju</h2><?= ranking($resources) ?></section>
+    <section class="card"><?= title('Kraje', 'countries') ?><?= ranking($countries, 'Brak danych', static fn($r) => flag((string) $r['label']) . h($r['label'])) ?></section>
+    <section class="card"><?= title('Miasta', 'cities') ?><?= ranking($cities, 'Brak danych', static fn($r) => flag((string) $r['country']) . h($r['label'])) ?></section>
+    <section class="card"><?= title('Zakładki', 'screens') ?><?= ranking($screens) ?></section>
+    <section class="card"><?= title('Skąd przyszli', 'referrers') ?><?= ranking($referrers, 'Brak — wejścia bezpośrednie') ?></section>
+    <section class="card"><?= title('Urządzenia', 'devices') ?><?= ranking($devices) ?></section>
+    <section class="card"><?= title('Przeglądarki', 'browsers') ?><?= ranking($browsers) ?></section>
+    <section class="card"><?= title('Dodawane kanały publiczne', 'channels') ?><?= ranking($channels) ?></section>
+    <section class="card"><?= title('Zapytania API wg rodzaju', 'resources') ?><?= ranking($resources) ?></section>
   </div>
 
-  <section class="card"><h2>Źródła danych API</h2>
+  <section class="card"><?= title('Źródła danych API', 'sources') ?>
     <?php if (!$sources): ?><div class="empty">Brak danych</div><?php else: ?>
     <table><tr><th>Źródło</th><th class="num">Zapytania</th><th class="num">Błędy</th><th class="num">% błędów</th><th class="num">Średnio</th><th class="num">Najwolniej</th></tr>
     <?php foreach ($sources as $r): $pct = (float) $r['total'] ? 100 * (float) $r['bad'] / (float) $r['total'] : 0; ?>
       <tr><td><?= h($r['source']) ?></td><td class="num"><?= n($r['total']) ?></td><td class="num"><?= n($r['bad']) ?></td><td class="num" style="color:<?= $pct > 5 ? 'var(--red)' : 'inherit' ?>"><?= number_format($pct, 1, ',', ' ') ?>%</td><td class="num"><?= n($r['avgms']) ?> ms</td><td class="num"><?= n($r['maxms']) ?> ms</td></tr>
     <?php endforeach; ?></table><?php endif; ?></section>
 
-  <section class="card"><h2>Najczęstsze błędy</h2><?= ranking($topErrors, 'Brak błędów') ?></section>
+  <section class="card"><?= title('Najczęstsze błędy', 'toperrors') ?><?= ranking($topErrors, 'Brak błędów') ?></section>
 
-  <section class="card"><h2>Ostatnie błędy <a class="btn" href="?p=<?= h($period) ?>&amp;err=<?= h($errFilter) ?>&amp;export=errors">CSV</a></h2>
+  <section class="card"><?= title('Ostatnie błędy', 'errors', '<a class="btn" href="?p=' . h($period) . '&amp;err=' . h($errFilter) . '&amp;export=errors">CSV</a>') ?>
     <div class="filters"><?php foreach (['all' => 'Wszystkie', 'api' => 'API', 'js' => 'Przeglądarka'] as $key => $label): ?><a href="?p=<?= h($period) ?>&amp;err=<?= $key ?>" class="<?= $key === $errFilter ? 'on' : '' ?>"><?= $label ?></a><?php endforeach; ?></div>
     <?php if (!$errors): ?><div class="empty">Brak błędów</div><?php else: ?>
     <table><tr><th>Czas</th><th>Rodzaj</th><th>Gdzie</th><th>Komunikat</th><th>Skąd</th><th>Przeglądarka</th></tr>

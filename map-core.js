@@ -127,7 +127,7 @@
   /** Unikalne linki fizyczne (nieskierowane); count = ile razy zaobserwowane. */
   function edges(events, nodes, directory) {
     const result = new Map();
-    events.filter(e => isTrackable(e.path)).forEach(event => {
+    events.filter(e => !e.inferredLastHop && isTrackable(e.path)).forEach(event => {
       const route = resolve(event.path, nodes, event.resolvedPath, directory);
       route.slice(1).forEach((b, i) => {
         const a = route[i];
@@ -135,8 +135,8 @@
         const missing = b.missingBefore.length > 0;
         const id = `${missing ? 'gps' : event.replyToSelected ? 'reply' : 'route'}:${edgeId(a, b)}`;
         const previous = result.get(id);
-        if (previous) previous.count += 1;
-        else result.set(id, { id, from: a, to: b, count: 1, reply: !!event.replyToSelected, missingGps: missing });
+        if (previous) { previous.count += 1; if (!event.uncertainAttribution) previous.uncertain = false; }
+        else result.set(id, { id, from: a, to: b, count: 1, reply: !!event.replyToSelected, missingGps: missing, uncertain: !!event.uncertainAttribution });
       });
     });
     return [...result.values()];
@@ -149,7 +149,7 @@
       const id = edgeId(e.from, e.to);
       if (!seen.has(id)) { seen.add(id); totalUniqueKm += distanceKm(e.from.lat, e.from.lon, e.to.lat, e.to.lon); }
     });
-    const routes = events.filter(e => e.longestRouteEligible && !e.replyToSelected && isTrackable(e.path))
+    const routes = events.filter(e => e.longestRouteEligible && !e.replyToSelected && !e.uncertainAttribution && !e.inferredLastHop && isTrackable(e.path))
       .flatMap(e => splitAtUnknown(resolve(e.path, nodes, e.resolvedPath, directory)))
       .map(withoutLoops).filter(r => r.length > 1);
     let longest = [], longestKm = 0;

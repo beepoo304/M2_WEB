@@ -4,16 +4,14 @@ const MAP_SESSION_STORAGE = 'm2-web-map-session-v1';
 const MAP_HISTORY_STORAGE = 'm2-web-longest-history-v1';
 const MAP_MAX_EVENTS = 5000;
 const MAP_HISTORY_LIMIT = 1000;
-const MAP_COLORS = { route: '#2fb866', reply: '#e0902f', gps: '#ab47bc', longest: '#2196f3', record: '#ff6565' };
-const MAP_LINE = { route: { weight: 2.25, opacity: .6 }, gps: { weight: 1.75, opacity: .55, dashArray: '5 6' }, longest: { weight: 4.5, opacity: .9 } };
 // Podkład 1:1 jak meshcoresouth.pl/mapper (tryb „Jasny, wyszarzony”): kafelki OSM + filtr CSS na .leaflet-tile-pane.
 const MAP_TILES = { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' };
 
 const mapState = {
   key: '', mode: 'ALL_FOR_SELECTED_KEY', running: false, committed: false, events: new Map(),
   directory: [], located: [], directorySource: '', directoryError: '',
-  view: null, layer: null, flightLayer: null, flightFrame: 0, fitted: false,
-  edgeLines: new Map(), nodeDots: new Map(), longestLine: null, selectedDot: null, panelOpen: typeof innerWidth === 'number' ? innerWidth >= 640 : true,
+  view: null, layer: null, flightLayer: null, flightFrame: 0, flight: null, fullscreen: false, startedAt: 0, name: '',
+  pulseTimer: 0, pulseOn: false, pulseRing: null, messageTimer: 0, focusedKey: '',
   baselineCounts: new Map(), processedCounts: new Map()
 };
 
@@ -36,6 +34,7 @@ function mapLoadSession() {
     if (!s) return;
     mapState.key = String(s.key || ''); mapState.mode = MapCore.MODES[s.mode] ? s.mode : 'ALL_FOR_SELECTED_KEY';
     mapState.running = !!s.running; mapState.committed = !!s.committed;
+    mapState.startedAt = Number(s.startedAt) || 0; mapState.name = String(s.name || '');
     mapState.baselineCounts = new Map(Array.isArray(s.baseline) ? s.baseline : []);
     mapState.processedCounts = new Map(Array.isArray(s.processed) ? s.processed : []);
     (Array.isArray(s.events) ? s.events : []).forEach(e => mapState.events.set(e.id, e));
@@ -44,7 +43,7 @@ function mapLoadSession() {
 function mapSaveSession() {
   try {
     sessionStorage.setItem(MAP_SESSION_STORAGE, JSON.stringify({
-      key: mapState.key, mode: mapState.mode, running: mapState.running, committed: mapState.committed,
+      key: mapState.key, mode: mapState.mode, running: mapState.running, committed: mapState.committed, startedAt: mapState.startedAt, name: mapState.name,
       baseline: mapState.baselineCounts ? [...mapState.baselineCounts.entries()] : [],
       processed: mapState.processedCounts ? [...mapState.processedCounts.entries()] : [],
       events: [...mapState.events.values()]
@@ -109,6 +108,7 @@ function mapIngest() {
     [...mapState.events.keys()].slice(0, mapState.events.size - MAP_MAX_EVENTS).forEach(id => mapState.events.delete(id));
   }
   if (added) { mapSaveSession(); if (currentScreen() === 'Map') updateMapView(); }
+  else if (currentScreen() === 'Map') mapUpdatePanel();
 }
 
 async function mapEnsureDirectory() {
@@ -134,238 +134,439 @@ async function mapEnsureDirectory() {
 function mapMetrics() {
   const events = [...mapState.events.values()];
   const metrics = MapCore.metrics(events, mapState.located, mapState.directory);
-  const maxHops = events.reduce((max, e) => Math.max(max, e.path.length - 1), 0);
+  // MAX HOPS jak w M²: tylko zdarzenia bez dopisanego (inferowanego) ostatniego hopa.
+  const maxHops = events.filter(e => !e.inferredLastHop).reduce((max, e) => Math.max(max, e.path.length - 1), 0);
   const packets = new Set(events.map(e => e.packetId || e.id)).size;
-  const channelPackets = new Set(events.filter(event => event.channel || event.channelHash).map(event => event.packetId)).size;
-  return { ...metrics, packets, routes: events.length, maxHops, channelPackets, edges: MapCore.edges(events, mapState.located, mapState.directory) };
+  const edges = MapCore.edges(events, mapState.located, mapState.directory);
+  return { ...metrics, packets, routes: events.length, links: edges.length, maxHops, edges };
 }
 
-const mapKm = value => `${Number(value || 0).toFixed(2)} km`;
+const mapKm1 = value => `${Number(value || 0).toFixed(1)} km`;
+const mapKeyShort = key => String(key || '').slice(0, 4).toUpperCase();
+const mapSelected = () => trackedKeys.find(k => k.key.toLowerCase() === mapState.key.toLowerCase());
+
+function mapBestKm(key) { return (mapLoadHistory()[String(key).toUpperCase()]?.km || []).reduce((max, v) => Math.max(max, v), 0); }
+/** longestRouteIsNewRecord z NetworkMapViewModel: km > rekord albo nieodczytany rekord równy bieżącemu. */
+function mapIsNewRecord(km) {
+  if (km <= 0) return false;
+  const best = mapBestKm(mapState.key);
+  return km > best + 0.005 || (mapRecordPending(mapState.key) && Math.abs(km - best) < 0.01);
+}
 
 function mapStart() {
   if (!mapState.key || mapState.running) return;
-  if (mapState.committed) {
-    mapState.events.clear(); mapState.committed = false; mapState.fitted = false;
-    mapSnapshotBaseline();
-  } else if (!mapState.baselineCounts || mapState.baselineCounts.size === 0) {
-    mapSnapshotBaseline();
-  }
+  if (mapState.committed) { mapState.events.clear(); mapState.committed = false; mapState.startedAt = 0; mapState.name = ''; }
+  if (!mapState.baselineCounts || mapState.baselineCounts.size === 0 || !mapState.startedAt) mapSnapshotBaseline();
+  if (!mapState.startedAt) mapState.startedAt = Date.now();
   mapState.running = true; mapSaveSession();
-  mapIngest(); mapRender(); mapEnsureDirectory().then(() => currentScreen() === 'Map' && updateMapView());
+  mapIngest(); mapUpdatePanel(); updateMapView();
+  mapEnsureDirectory().then(() => currentScreen() === 'Map' && updateMapView());
 }
 function mapStop() {
-  if (!mapState.running) return;
+  mapCancelFlight();
+  if (!mapState.running) { mapUpdatePanel(); return; }
   mapState.running = false;
   const km = mapMetrics().longestRouteKm;
-  if (!mapState.committed && km > 0) { mapCommitLongest(mapState.key, km); }
-  mapState.committed = true; mapSaveSession(); mapRender();
+  if (!mapState.committed && km > 0) mapCommitLongest(mapState.key, km);
+  mapState.committed = true; mapSaveSession(); mapUpdatePanel(); updateMapView();
 }
+/** Restart: anuluje lot, czyści sesję (tryb zostaje), centruje wybrany węzeł na zoom 12. */
 function mapRestart() {
-  mapState.events.clear(); mapState.running = false; mapState.committed = false; mapState.fitted = false;
-  mapSnapshotBaseline();
-  mapSaveSession(); mapRender();
+  mapCancelFlight();
+  mapState.events.clear(); mapState.running = false; mapState.committed = false; mapState.startedAt = 0; mapState.name = '';
+  mapSnapshotBaseline(); mapSaveSession(); mapUpdatePanel(); updateMapView(); mapFocusSelected();
+}
+function mapFocusSelected() {
+  const node = mapState.located.find(n => n.key.toLowerCase() === mapState.key.toLowerCase());
+  if (node && mapState.view) mapState.view.flyTo([node.lat, node.lon], 12, { duration: .8 });
 }
 
 function leaveMap() {
-  cancelAnimationFrame(mapState.flightFrame);
+  mapCancelFlight();
+  clearInterval(mapState.pulseTimer); clearTimeout(mapState.messageTimer);
+  document.body.classList.remove('map-fs-on');
   if (mapState.view) { mapState.view.remove(); mapState.view = null; mapState.layer = null; mapState.flightLayer = null; }
-  mapState.edgeLines.clear(); mapState.nodeDots.clear(); mapState.longestLine = null; mapState.selectedDot = null;
+  mapState.fullscreen = false;
 }
+
+const MAP_FS_ICON = '<svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path fill="currentColor" d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>';
+const MAP_FS_EXIT_ICON = '<svg viewBox="0 0 24 24" width="30" height="30" aria-hidden="true"><path fill="currentColor" d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></svg>';
 
 function mapRender() {
   leaveMap();
-  if (!trackedKeys.some(k => k.key.toLowerCase() === mapState.key.toLowerCase())) { mapState.key = trackedKeys[0]?.key || ''; }
-  // M² always shows the map; without saved keys the selector is empty and Start is unavailable.
-  const noKey = !trackedKeys.length;
-  const keyOptions = noKey ? '<option value="">No saved keys</option>' : trackedKeys.map(k => `<option value="${escapeHtml(k.key)}" ${k.key.toLowerCase() === mapState.key.toLowerCase() ? 'selected' : ''}>${escapeHtml(k.name || 'Unnamed')} · ${escapeHtml(k.key.slice(0, 4).toUpperCase())}</option>`).join('');
-  const modeOptions = Object.entries(MapCore.MODES).map(([id, label]) => `<option value="${id}" ${id === mapState.mode ? 'selected' : ''}>${label}</option>`).join('');
-  const lock = mapState.running ? 'disabled' : '';
-  screen.innerHTML = `<section class="map-screen map-full">
+  if (!trackedKeys.some(k => k.key.toLowerCase() === mapState.key.toLowerCase())) mapState.key = trackedKeys[0]?.key || '';
+  const modeOptions = Object.entries(MapCore.MODES).map(([id, label]) => `<option value="${id}">${label}</option>`).join('');
+  screen.innerHTML = `<section class="map-screen map-full m2-map">
     <div id="map-canvas" aria-label="Network map"></div>
-    <div class="map-panel ${mapState.panelOpen ? '' : 'collapsed'}">
-      <div class="map-panel-head">
-        <div><div class="eyebrow">NETWORK MAP</div><b class="map-panel-title">Map</b></div>
-        <button type="button" id="map-panel-toggle" class="map-panel-toggle" aria-expanded="${mapState.panelOpen}" title="Show / hide panel">${mapState.panelOpen ? '−' : '+'}</button>
+    <div class="map-panel m2-map-panel">
+      <div class="m2-field m2-key-field"><span class="m2-field-label">Tracked key</span>
+        <button type="button" id="map-key-button" class="m2-select" aria-haspopup="listbox"><span id="map-key-value"></span><i aria-hidden="true">▾</i></button>
+        <div id="map-key-menu" class="m2-menu" role="listbox" hidden></div></div>
+      <div class="m2-map-row">
+        <label class="m2-field m2-mode-field"><span class="m2-field-label">Traffic mode</span>
+          <select id="map-mode" class="m2-select">${modeOptions}</select></label>
+        <button type="button" id="map-export" class="m2-outline">Export</button>
+        <button type="button" id="map-import" class="m2-outline">Load</button>
       </div>
-      <div class="map-panel-body">
-        <div class="map-controls">
-          <label>Tracked key<select id="map-key" ${lock || (noKey ? 'disabled' : '')}>${keyOptions}</select></label>
-          <label>Tracking mode<select id="map-mode" ${lock}>${modeOptions}</select></label>
-        </div>
-        <div class="map-buttons">
-          <button type="button" id="map-toggle" class="${mapState.running ? 'map-stop' : 'map-start'}" ${noKey ? 'disabled' : ''}>${mapState.running ? 'Stop' : 'Start'}</button>
-          <button type="button" id="map-restart" ${noKey ? 'disabled' : ''}>Restart</button>
-          <button type="button" id="map-export" title="Export map file">Export</button>
-          <button type="button" id="map-import" title="Load map file">Load</button>
-        </div>
-        <div class="map-counters">
-          <div><span>Packets</span><b id="map-packets">0</b></div><div><span>Routes</span><b id="map-routes">0</b></div><div><span>Links</span><b id="map-links">0</b></div>
-          <div><span>MAX HOPS</span><b id="map-hops">0</b></div><div><span>Channel packets</span><b id="map-channel-packets">0</b></div><div><span>Distance</span><b id="map-distance">0.00 km</b></div>
-        </div>
-        <button type="button" id="map-longest" class="longest-tile"><span>Longest route</span><b id="map-longest-km">0.00 km</b></button>
-        <p id="map-status" class="map-status" role="status" aria-live="polite"></p>
+      <div class="m2-map-row m2-map-actions">
+        <button type="button" id="map-toggle" class="m2-pill m2-pill-primary"></button>
+        <button type="button" id="map-restart" class="m2-pill m2-pill-outline"><span aria-hidden="true">↻</span> Restart</button>
       </div>
+      <div id="map-status" class="m2-map-status" role="status" aria-live="polite"></div>
+      <div id="map-counts" class="m2-map-line"></div>
+      <div id="map-distance" class="m2-map-line"></div>
+      <div class="m2-map-row m2-hops-row"><span id="map-hops" class="m2-map-line"></span>
+        <button type="button" id="map-longest" class="m2-longest">Longest route <b id="map-longest-km">0.0 km</b></button></div>
+      <div id="map-error" class="m2-map-error"></div>
+      <div id="map-progress" class="m2-progress" hidden><span></span></div>
+      <div id="map-message" class="m2-map-message"></div>
     </div>
-    <div class="map-legend"><span style="--c:${MAP_COLORS.route}">Confirmed route</span><span style="--c:${MAP_COLORS.reply}">Reply to key</span><span style="--c:${MAP_COLORS.longest}">Longest route</span><span style="--c:${MAP_COLORS.gps}">RPT without GPS · 0 km</span></div>
+    <button type="button" id="map-fs" class="m2-fs-button" title="Fullscreen" aria-label="Fullscreen">${MAP_FS_ICON}</button>
+    <button type="button" id="map-fs-exit" class="m2-fs-exit" title="Exit fullscreen" aria-label="Exit fullscreen">${MAP_FS_EXIT_ICON}</button>
+    <img class="m2-fs-logo" src="assets/m2-logo.svg" alt="M²">
+    <div id="map-compass" class="m2-compass" hidden>N 000°</div>
   </section>`;
-  document.getElementById('map-panel-toggle').addEventListener('click', e => {
-    mapState.panelOpen = !mapState.panelOpen;
-    e.currentTarget.closest('.map-panel').classList.toggle('collapsed', !mapState.panelOpen);
-    e.currentTarget.textContent = mapState.panelOpen ? '−' : '+'; e.currentTarget.setAttribute('aria-expanded', mapState.panelOpen);
+  const keyButton = document.getElementById('map-key-button'), keyMenu = document.getElementById('map-key-menu');
+  keyButton.addEventListener('click', () => { if (!keyButton.disabled) keyMenu.hidden = !keyMenu.hidden; });
+  keyMenu.addEventListener('click', e => {
+    const item = e.target.closest('[data-map-key]'); if (!item) return;
+    keyMenu.hidden = true;
+    if (item.dataset.mapKey.toLowerCase() === mapState.key.toLowerCase()) return;
+    mapState.key = item.dataset.mapKey; mapRestart();
   });
-  document.getElementById('map-key').addEventListener('change', e => { mapState.key = e.target.value; mapRestart(); });
-  document.getElementById('map-mode').addEventListener('change', e => { mapState.mode = e.target.value; mapRestart(); });
-  document.getElementById('map-toggle').addEventListener('click', () => (mapState.running ? mapStop() : mapStart()));
+  document.addEventListener('click', mapCloseKeyMenu);
+  document.getElementById('map-mode').addEventListener('change', e => { mapState.mode = e.target.value; mapSaveSession(); mapUpdatePanel(); });
+  document.getElementById('map-toggle').addEventListener('click', () => (mapState.running || mapState.flight ? mapStop() : mapStart()));
   document.getElementById('map-restart').addEventListener('click', mapRestart);
-  document.getElementById('map-longest').addEventListener('click', mapFlight);
+  document.getElementById('map-longest').addEventListener('click', mapLongestClicked);
   document.getElementById('map-export').addEventListener('click', mapExportFile);
   document.getElementById('map-import').addEventListener('click', mapImportDialog);
-  if (typeof L === 'undefined') { document.getElementById('map-status').textContent = 'The map library failed to load.'; return; }
-  mapState.view = L.map('map-canvas', { zoomControl: false, attributionControl: false, worldCopyJump: false, preferCanvas: true, renderer: L.canvas({ padding: .4 }) }).setView([52.0, 19.5], 6);
-  L.control.zoom({ position: 'topright' }).addTo(mapState.view);
+  document.getElementById('map-fs').addEventListener('click', () => mapSetFullscreen(true));
+  document.getElementById('map-fs-exit').addEventListener('click', () => mapSetFullscreen(false));
+  mapUpdatePanel();
+  if (typeof L === 'undefined') { mapError('The map library failed to load.'); return; }
+  mapState.view = L.map('map-canvas', { zoomControl: false, attributionControl: false, zoomSnap: 1, zoomDelta: 1, wheelPxPerZoomLevel: 90, preferCanvas: true, renderer: L.canvas({ padding: .5 }) })
+    .setView([50.15, 19.2], 7);
   L.control.attribution({ position: 'bottomright', prefix: false }).addTo(mapState.view);
   L.tileLayer(MAP_TILES.url, { maxZoom: MAP_TILES.maxZoom, attribution: MAP_TILES.attribution }).addTo(mapState.view);
   mapState.layer = L.layerGroup().addTo(mapState.view);
   mapState.flightLayer = L.layerGroup().addTo(mapState.view);
-  mapState.fitted = false;
+  mapState.pulseOn = false;
+  mapState.pulseTimer = setInterval(mapPulse, 850);
   updateMapView();
-  mapEnsureDirectory().then(() => currentScreen() === 'Map' && updateMapView());
+  mapEnsureDirectory().then(() => { if (currentScreen() === 'Map') { updateMapView(); mapUpdatePanel(); } });
+}
+function mapCloseKeyMenu(e) {
+  const menu = document.getElementById('map-key-menu');
+  if (!menu) { document.removeEventListener('click', mapCloseKeyMenu); return; }
+  if (!e.target.closest('.m2-key-field')) menu.hidden = true;
 }
 
-/** Marginesy dopasowania widoku tak, by trasy nie chowały się pod panelem i dolną nawigacją. */
-function mapFitPadding() {
-  const panel = document.querySelector('.map-panel'), wide = innerWidth >= 800;
-  const left = panel && wide ? panel.getBoundingClientRect().right + 24 : 28;
-  const top = panel && !wide ? panel.getBoundingClientRect().bottom + 16 : 28;
-  return { paddingTopLeft: [left, top], paddingBottomRight: [60, wide ? 120 : 100] };
+function mapSetFullscreen(on) {
+  mapState.fullscreen = on;
+  document.querySelector('.m2-map')?.classList.toggle('fs', on);
+  document.body.classList.toggle('map-fs-on', on);
+  setTimeout(() => mapState.view?.invalidateSize(), 60);
 }
 
-function mapLabel(point) { return escapeHtml(point.name || point.hash); }
+function mapError(text) { const el = document.getElementById('map-error'); if (el) el.textContent = text || ''; }
+/** Komunikat jak w M²: znika po 3 s. */
+function mapMessage(text) {
+  const el = document.getElementById('map-message'); if (!el) return;
+  el.textContent = text; clearTimeout(mapState.messageTimer);
+  mapState.messageTimer = setTimeout(() => { el.textContent = ''; }, 3000);
+}
+function mapProgress(on) { const el = document.getElementById('map-progress'); if (el) el.hidden = !on; }
+
+/** Tylko panel — mapa Leaflet nie jest tworzona od nowa przy Start/Stop/Restart. */
+function mapUpdatePanel() {
+  if (currentScreen() !== 'Map') return;
+  const $ = id => document.getElementById(id); if (!$('map-status')) return;
+  const noKey = !trackedKeys.length, running = mapState.running, selected = mapSelected();
+  $('map-key-value').innerHTML = selected ? `${escapeHtml(mapKeyShort(selected.key))}` : '<span class="m2-muted">No saved keys</span>';
+  $('map-key-button').disabled = noKey;
+  $('map-key-button').closest('.m2-field').classList.toggle('active', running);
+  $('map-key-menu').innerHTML = trackedKeys.map(k => `<button type="button" role="option" data-map-key="${escapeHtml(k.key)}"><b>${escapeHtml(mapKeyShort(k.key))}</b> ${escapeHtml(k.name || '')}</button>`).join('');
+  const mode = $('map-mode'); mode.value = mapState.mode; mode.disabled = running;
+  const toggle = $('map-toggle'), stop = running || !!mapState.flight;
+  toggle.innerHTML = stop ? '<span class="m2-ico-stop" aria-hidden="true"></span> Stop' : '<span aria-hidden="true">▷</span> Start';
+  toggle.disabled = noKey; $('map-restart').disabled = noKey;
+  const status = $('map-status');
+  const loading = !mapState.located.length && !mapState.directoryError && !!mapState.key;
+  status.textContent = loading ? 'Loading repeater locations…'
+    : running ? `TRACKING · ${mapKeyShort(mapState.key)} · ${MapCore.MODES[mapState.mode]}`
+    : `STOPPED${mapState.key ? ` · ${mapKeyShort(mapState.key)}` : ''}`;
+  status.classList.toggle('tracking', running && !loading);
+  const m = mapMetrics();
+  $('map-counts').textContent = `Packets ${m.packets} · Routes ${m.routes} · Links ${m.links}`;
+  $('map-distance').textContent = `UNIQUE LINKS DISTANCE ${mapKm1(m.totalUniqueKm)}`;
+  $('map-hops').textContent = `MAX HOPS ${m.maxHops}`;
+  $('map-longest-km').textContent = mapKm1(m.longestRouteKm);
+  $('map-longest-km').classList.toggle('record', mapIsNewRecord(m.longestRouteKm));
+  $('map-longest').disabled = m.longestRoute.length < 2;
+  mapError(mapState.directoryError ? `Node directory unavailable: ${mapState.directoryError}` : '');
+}
+
+/** Styl krawędzi 1:1 z NetworkMapScreen.kt (kolor, grubość wg liczby obserwacji, przerywana gdy niepewna). */
+function mapEdgeStyle(edge) {
+  const color = edge.missingGps ? '#AB47BC' : edge.reply || edge.uncertain ? '#F0A84B' : '#42D47B';
+  const confirmed = !edge.uncertain && !edge.missingGps;
+  const width = (2.6 + Math.min(edge.count, 8) * .22) * (confirmed || edge.reply ? 1.4 : 1);
+  const alpha = edge.uncertain ? Math.min(175 + edge.count * 8, 255) / 255 : 1;
+  return { color, weight: width, opacity: alpha, dashArray: edge.uncertain ? '8 5' : null, lineCap: edge.uncertain ? 'butt' : 'round' };
+}
+const mapSegKey = (a, b) => [a.key.toUpperCase(), b.key.toUpperCase()].sort().join('|');
+
+function mapDrawEdges(layer, edges, sharedReply) {
+  // Kolejność jak w M²: najpierw zwykłe, odpowiedzi na wierzchu; odpowiedzi pokrywające najdłuższą trasę ukryte.
+  [...edges].sort((a, b) => Number(a.reply) - Number(b.reply))
+    .filter(e => !(e.reply && sharedReply.has(mapSegKey(e.from, e.to))))
+    .forEach(edge => {
+      const style = mapEdgeStyle(edge), latlngs = [[edge.from.lat, edge.from.lon], [edge.to.lat, edge.to.lon]];
+      L.polyline(latlngs, { color: '#191D1B', opacity: .85, weight: style.weight + 4, lineCap: 'round', interactive: false }).addTo(layer);
+      L.polyline(latlngs, { ...style, interactive: false }).addTo(layer);
+    });
+}
+function mapDrawLongest(layer, route, sharedReply) {
+  route.slice(1).forEach((b, i) => {
+    const a = route[i]; if (b.missingBefore.length || b.unknownBefore) return;
+    const latlngs = [[a.lat, a.lon], [b.lat, b.lon]];
+    L.polyline(latlngs, { color: '#2196F3', weight: 4.2, opacity: 1, lineCap: 'round', interactive: false }).addTo(layer);
+    if (sharedReply.has(mapSegKey(a, b))) L.polyline(latlngs, { color: '#F0A84B', weight: 4.2, opacity: 1, dashArray: '22 22', lineCap: 'butt', interactive: false }).addTo(layer);
+  });
+}
+function mapDrawNodes(layer, edges) {
+  const points = new Map();
+  edges.forEach(edge => [edge.from, edge.to].forEach(p => {
+    const id = p.key.toUpperCase(), prev = points.get(id);
+    points.set(id, { p, uncertain: prev ? prev.uncertain && edge.uncertain : edge.uncertain });
+  }));
+  const selectedId = mapState.key.toUpperCase();
+  const selected = mapState.located.find(n => n.key.toUpperCase() === selectedId);
+  if (selected && !points.has(selectedId)) points.set(selectedId, { p: { ...selected, hash: selected.key.slice(0, 4), sourceHash: selected.key.slice(0, 4) }, uncertain: false });
+  mapState.pulseRing = null;
+  points.forEach(({ p, uncertain }, id) => {
+    const isSelected = id === selectedId;
+    if (isSelected) mapState.pulseRing = L.circleMarker([p.lat, p.lon], { radius: 12, color: '#35E879', weight: 2, opacity: .7, fill: false, interactive: false }).addTo(layer);
+    const tip = uncertain && p.sourceHash && p.sourceHash.toUpperCase() !== p.hash.toUpperCase() ? `${p.sourceHash} → ${p.hash}` : p.hash;
+    L.circleMarker([p.lat, p.lon], { radius: isSelected ? 8 : 6, color: '#101215', weight: 1.5, fillColor: uncertain ? '#FFA726' : '#35E879', fillOpacity: 1 })
+      .bindTooltip(escapeHtml(tip.toUpperCase()), { direction: 'top', className: 'm2-tip' }).addTo(layer);
+  });
+}
+function mapPulse() {
+  mapState.pulseOn = !mapState.pulseOn;
+  mapState.pulseRing?.setStyle({ opacity: mapState.pulseOn ? .15 : .7 });
+  mapState.pulseRing?.setRadius(mapState.pulseOn ? 16 : 12);
+}
+function mapSharedReplySegments(edges, route) {
+  const routeSegs = new Set(route.slice(1).map((b, i) => mapSegKey(route[i], b)));
+  return new Set(edges.filter(e => e.reply && routeSegs.has(mapSegKey(e.from, e.to))).map(e => mapSegKey(e.from, e.to)));
+}
 
 function updateMapView() {
-  if (currentScreen() !== 'Map' || !mapState.layer) return;
-  const m = mapMetrics();
-  const set = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; };
-  set('map-packets', m.packets); set('map-routes', m.routes); set('map-links', m.uniqueLinks); set('map-hops', m.maxHops); set('map-channel-packets', m.channelPackets);
-  set('map-distance', mapKm(m.totalUniqueKm)); set('map-longest-km', mapKm(m.longestRouteKm));
-  document.getElementById('map-longest-km')?.classList.toggle('record-km', mapRecordPending(mapState.key));
-  const status = document.getElementById('map-status');
-  if (status) {
-    status.textContent = !trackedKeys.length ? 'Add a full public key in Settings to track its routes, repeaters and distances.'
-      : mapState.directoryError ? `Node directory unavailable: ${mapState.directoryError}`
-      : !mapState.running && !mapState.events.size ? 'Press Start to collect routes for the selected key.'
-      : mapState.running ? 'Tracking… routes are added with every Live refresh.' : mapState.committed ? 'Stopped. The longest route of this session was saved.' : '';
-  }
-  // Rysowanie przyrostowe: istniejące linie/punkty zostają, aktualizowane są tylko zmiany (brak migania przy odświeżeniu Live).
-  const bounds = [], seenEdges = new Set(), seenDots = new Set();
-  const dotColor = new Map();
-  const pointId = point => `${point.lat.toFixed(5)},${point.lon.toFixed(5)}`;
-  const claimDot = (point, color) => {
-    const id = pointId(point), prev = dotColor.get(id);
-    // priorytet koloru punktu: zwykła trasa > odpowiedź > brak GPS
-    if (!prev || (prev.color === MAP_COLORS.gps && color !== MAP_COLORS.gps) || (prev.color === MAP_COLORS.reply && color === MAP_COLORS.route)) dotColor.set(id, { point, color });
-  };
-  m.edges.forEach(edge => {
-    const kind = edge.missingGps ? 'gps' : edge.reply ? 'reply' : 'route';
-    const color = MAP_COLORS[kind], style = edge.missingGps ? MAP_LINE.gps : MAP_LINE.route;
-    const latlngs = [[edge.from.lat, edge.from.lon], [edge.to.lat, edge.to.lon]];
-    seenEdges.add(edge.id);
-    const line = mapState.edgeLines.get(edge.id);
-    if (line) line.setLatLngs(latlngs);
-    else mapState.edgeLines.set(edge.id, L.polyline(latlngs, { color, lineCap: 'round', ...style }).addTo(mapState.layer));
-    claimDot(edge.from, color); claimDot(edge.to, color);
-    bounds.push(...latlngs);
-  });
-  mapState.edgeLines.forEach((line, id) => { if (!seenEdges.has(id)) { mapState.layer.removeLayer(line); mapState.edgeLines.delete(id); } });
-  dotColor.forEach(({ point, color }, id) => {
-    seenDots.add(id);
-    const dot = mapState.nodeDots.get(id);
-    if (dot) { if (dot.options.color !== color) dot.setStyle({ color }); }
-    else mapState.nodeDots.set(id, L.circleMarker([point.lat, point.lon], { radius: 4.5, color, weight: 2, opacity: .9, fillColor: '#ffffff', fillOpacity: 1 })
-      .bindTooltip(mapLabel(point), { direction: 'top', className: 'm2-tip' }).addTo(mapState.layer));
-  });
-  mapState.nodeDots.forEach((dot, id) => { if (!seenDots.has(id)) { mapState.layer.removeLayer(dot); mapState.nodeDots.delete(id); } });
-  const longest = m.longestRoute.length > 1 ? m.longestRoute.map(p => [p.lat, p.lon]) : null;
-  if (longest && mapState.longestLine) mapState.longestLine.setLatLngs(longest).bringToFront();
-  else if (longest) mapState.longestLine = L.polyline(longest, { color: MAP_COLORS.longest, lineCap: 'round', ...MAP_LINE.longest }).addTo(mapState.layer);
-  else if (mapState.longestLine) { mapState.layer.removeLayer(mapState.longestLine); mapState.longestLine = null; }
-  const selected = mapState.located.find(n => n.key.toLowerCase() === mapState.key.toLowerCase());
-  if (selected && !mapState.selectedDot) mapState.selectedDot = L.circleMarker([selected.lat, selected.lon], { radius: 7, color: '#fff', weight: 2, fillColor: MAP_COLORS.route, fillOpacity: 1 }).bindTooltip(escapeHtml(selected.name || selected.key.slice(0, 4)), { className: 'm2-tip' }).addTo(mapState.layer);
-  else if (selected) mapState.selectedDot.setLatLng([selected.lat, selected.lon]).bringToFront();
-  else if (mapState.selectedDot) { mapState.layer.removeLayer(mapState.selectedDot); mapState.selectedDot = null; }
-  if (bounds.length && !mapState.fitted) { mapState.view.fitBounds(bounds, { ...mapFitPadding(), maxZoom: 11 }); mapState.fitted = true; }
+  if (currentScreen() !== 'Map') return;
+  mapUpdatePanel();
+  if (!mapState.layer || mapState.flight) return;     // w trakcie lotu warstwy rysuje animacja
+  const m = mapMetrics(), shared = mapSharedReplySegments(m.edges, m.longestRoute);
+  mapState.layer.clearLayers();
+  mapDrawEdges(mapState.layer, m.edges, shared);
+  if (m.longestRoute.length > 1) mapDrawLongest(mapState.layer, m.longestRoute, shared);
+  mapDrawNodes(mapState.layer, m.edges);
+  const key = mapState.key.toLowerCase();
+  if (key && mapState.focusedKey !== key && mapState.located.some(n => n.key.toLowerCase() === key)) { mapState.focusedKey = key; mapFocusSelected(); }
 }
 
-/** Animowany lot po najdłuższej trasie: północ u góry, bieżący odcinek i dystans, na końcu suma. */
-function mapFlight() {
-  const m = mapMetrics();
-  const route = m.longestRoute;
-  const status = document.getElementById('map-status');
-  if (route.length < 2) { if (status) status.textContent = 'No confirmed longest route yet.'; return; }
-  mapClearPending(mapState.key);
-  document.getElementById('map-longest-km')?.classList.remove('record-km');   // czerwony do pierwszego otwarcia
+// ---------- Lot po najdłuższej trasie (port LaunchedEffect(animationToken) z NetworkMapScreen.kt) ----------
+function mapFlightZoom(km) { return km < 1 ? 18.5 : km < 3 ? 17.5 : km < 5 ? 16.7 : km < 8 ? 15.5 : km < 20 ? 14 : km < 50 ? 12.7 : km < 100 ? 11.4 : 10; }
+function mapMercY(lat) { const s = Math.sin(lat * Math.PI / 180); return .5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI); }
+function mapFitSegmentZoom(a, b) {
+  const size = mapState.view.getSize();
+  const fx = Math.max(Math.abs(a.lon - b.lon) / 360, 1e-9), fy = Math.max(Math.abs(mapMercY(a.lat) - mapMercY(b.lat)), 1e-9);
+  const w = Math.max((size.x - 260) / 2, 160), h = Math.max((size.y - 360) / 2, 240);
+  return Math.min(18.5, Math.max(4, Math.min(Math.log2(w / 256 / fx), Math.log2(h / 256 / fy))));
+}
+function mapBearing(a, b) {
+  const r = Math.PI / 180, y = Math.sin((b.lon - a.lon) * r) * Math.cos(b.lat * r);
+  const x = Math.cos(a.lat * r) * Math.sin(b.lat * r) - Math.sin(a.lat * r) * Math.cos(b.lat * r) * Math.cos((b.lon - a.lon) * r);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+function mapBadge(layer, point, text, anchor = 1.35) {
+  const icon = L.divIcon({ className: 'm2-flight-badge-wrap', html: `<div class="m2-flight-badge" style="--anchor:${anchor}">${escapeHtml(text)}</div>`, iconSize: [0, 0] });
+  return L.marker([point.lat, point.lon], { icon, interactive: false, keyboard: false, zIndexOffset: 1000 }).addTo(layer);
+}
+function mapFade(markers, ms = 500) {
+  markers.filter(Boolean).forEach(m => { const el = m.getElement()?.firstChild; if (el) { el.style.transition = `opacity ${ms}ms`; el.style.opacity = '0'; } });
+  return new Promise(resolve => setTimeout(() => { markers.filter(Boolean).forEach(m => m.remove()); resolve(); }, ms));
+}
+function mapCancelFlight() {
+  if (!mapState.flight) return;
+  mapState.flight.cancelled = true; mapState.flight = null;
+  if (mapState.view) mapState.view.options.zoomSnap = 1;
   cancelAnimationFrame(mapState.flightFrame);
-  mapState.flightLayer.clearLayers();
-  const segments = route.slice(1).map((b, i) => ({ a: route[i], b, km: MapCore.distanceKm(route[i].lat, route[i].lon, b.lat, b.lon) }));
-  const total = segments.reduce((s, x) => s + x.km, 0);
-  const duration = Math.min(25000, Math.max(6000, total * 40));
-  const trail = L.polyline([[route[0].lat, route[0].lon]], { color: MAP_COLORS.longest, weight: 5, opacity: .95, lineCap: 'round' }).addTo(mapState.flightLayer);
-  const plane = L.circleMarker([route[0].lat, route[0].lon], { radius: 8, color: '#fff', weight: 2, fillColor: MAP_COLORS.longest, fillOpacity: 1 }).addTo(mapState.flightLayer);
-  const badge = L.tooltip({ permanent: true, direction: 'top', className: 'm2-tip m2-badge', offset: [0, -10] }).setContent('').setLatLng([route[0].lat, route[0].lon]).addTo(mapState.flightLayer);
-  mapState.view.setView([route[0].lat, route[0].lon], 9, { animate: false });
-  const t0 = performance.now();
-  const frame = now => {
-    if (!mapState.view) return;
-    const done = Math.min(1, (now - t0) / duration);
-    let remaining = done * total, covered = 0, index = 0;
-    while (index < segments.length - 1 && remaining > segments[index].km) { remaining -= segments[index].km; covered += segments[index].km; index++; }
-    const seg = segments[index], f = seg.km ? Math.min(1, remaining / seg.km) : 1;
-    const lat = seg.a.lat + (seg.b.lat - seg.a.lat) * f, lon = seg.a.lon + (seg.b.lon - seg.a.lon) * f;
-    const points = [[route[0].lat, route[0].lon], ...segments.slice(0, index).map(s => [s.b.lat, s.b.lon]), [lat, lon]];
-    trail.setLatLngs(points); plane.setLatLng([lat, lon]); badge.setLatLng([lat, lon]);
-    badge.setContent(done >= 1 ? `TOTAL ${mapKm(total)}` : `${escapeHtml(seg.a.hash)} → ${escapeHtml(seg.b.hash)} · ${mapKm(seg.km)}`);
-    mapState.view.panTo([lat, lon], { animate: false });
-    if (done < 1) mapState.flightFrame = requestAnimationFrame(frame);
-    else mapState.view.fitBounds(route.map(p => [p.lat, p.lon]), { ...mapFitPadding(), maxZoom: 11 });
-  };
-  mapState.flightFrame = requestAnimationFrame(frame);
+  mapState.flightLayer?.clearLayers();
+  const compass = document.getElementById('map-compass'); if (compass) compass.hidden = true;
+  updateMapView();
+}
+
+function mapLongestClicked() {
+  const m = mapMetrics();
+  if (m.longestRoute.length < 2 || !mapState.view) return;
+  const route = m.longestRoute.slice(), edges = m.edges;     // migawka trasy, jak w M²
+  mapStop();
+  mapClearPending(mapState.key);
+  mapSetFullscreen(true);
+  setTimeout(() => mapFly(route, edges), 180);
+}
+
+async function mapFly(route, edges) {
+  mapCancelFlight();
+  const flight = { cancelled: false }; mapState.flight = flight; mapUpdatePanel();
+  const view = mapState.view, layer = mapState.layer, badges = mapState.flightLayer;
+  const alive = () => !flight.cancelled && mapState.view === view;
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const frame = () => new Promise(resolve => { mapState.flightFrame = requestAnimationFrame(resolve); });
+  const compass = document.getElementById('map-compass');
+  try {
+    view.invalidateSize(); view.options.zoomSnap = 0;   // płynny, ułamkowy zoom tylko podczas lotu
+    const shared = mapSharedReplySegments(edges, route);
+    layer.clearLayers(); badges.clearLayers();
+    // Cała zielona sieć widoczna przez cały lot; niebieska trasa odsłaniana stopniowo, kropki nad liniami.
+    mapDrawEdges(layer, edges, shared);
+    const lines = L.layerGroup().addTo(layer);
+    const dots = L.layerGroup().addTo(layer); mapDrawNodes(dots, edges);
+    const totalKm = MapCore.measuredKm(route);
+    const [a0, b0] = route;
+    view.setView([a0.lat, a0.lon], Math.min(mapFlightZoom(MapCore.distanceKm(a0.lat, a0.lon, b0.lat, b0.lon)), mapFitSegmentZoom(a0, b0)), { animate: false });
+    let departure = mapBadge(badges, a0, `START · ${a0.hash.toUpperCase()}`);
+    if (compass) compass.hidden = false;
+    await sleep(900); if (!alive()) return;
+    for (let index = 1; index < route.length; index++) {
+      const from = route[index - 1], to = route[index];
+      const distance = MapCore.distanceKm(from.lat, from.lon, to.lat, to.lon);
+      const targetZoom = Math.min(mapFlightZoom(distance), mapFitSegmentZoom(from, to));
+      const startZoom = view.getZoom(), bearing = mapBearing(from, to);
+      const duration = Math.min((3200 + Math.min(distance, 150) * 16) * 1.3, 7300);
+      const missingGps = to.missingBefore.length > 0;
+      const distanceBadge = mapBadge(badges, { lat: (from.lat + to.lat) / 2, lon: (from.lon + to.lon) / 2 }, missingGps ? 'NO GPS RPT' : `${distance.toFixed(1)} km`);
+      const segment = L.polyline([[from.lat, from.lon]], { color: missingGps ? '#AB47BC' : '#2196F3', weight: missingGps ? 2.2 : 6.5, opacity: 1, lineCap: 'round', interactive: false }).addTo(lines);
+      const sharedSeg = shared.has(mapSegKey(from, to)) ? L.polyline([[from.lat, from.lon]], { color: '#F0A84B', weight: 6.5, dashArray: '34 34', lineCap: 'butt', interactive: false }).addTo(lines) : null;
+      if (compass) compass.textContent = `N ${String(Math.round(bearing) % 360).padStart(3, '0')}°`;
+      let arrival = null; const t0 = performance.now(); let raw = 0;
+      while (raw < 1) {
+        await frame(); if (!alive()) return;
+        raw = Math.min(1, (performance.now() - t0) / duration);
+        const t = raw * raw * (3 - 2 * raw);
+        const lat = from.lat + (to.lat - from.lat) * t, lon = from.lon + (to.lon - from.lon) * t;
+        view.setView([lat, lon], startZoom + (targetZoom - startZoom) * t, { animate: false });
+        segment.setLatLngs([[from.lat, from.lon], [lat, lon]]); sharedSeg?.setLatLngs([[from.lat, from.lon], [lat, lon]]);
+        if (!arrival && raw >= .8) {
+          const last = index === route.length - 1;
+          arrival = mapBadge(badges, to, `${last ? 'FINISH → ' : ''}HOP ${to.hopIndex} · ${to.hash.toUpperCase()}`);
+          if (last) mapBadge(badges, to, `LONGEST ROUTE · ${totalKm.toFixed(2)} km`, 2.65);
+        }
+      }
+      await mapFade([departure, distanceBadge]); if (!alive()) return;
+      departure = arrival;
+      await sleep(650); if (!alive()) return;
+    }
+    await sleep(800); if (!alive()) return;
+    view.options.zoomSnap = 1;
+    view.fitBounds(route.map(p => [p.lat, p.lon]), { padding: [90, 90], animate: true });
+    await sleep(4000); if (!alive()) return;
+    mapState.flight = null;
+    if (compass) compass.hidden = true;
+    badges.clearLayers(); updateMapView();
+  } finally {
+    if (mapState.flight === flight && flight.cancelled) mapState.flight = null;
+  }
 }
 
 function renderMap() { mapRender(); }
 
-/** Eksport/import sesji mapy (port MapFileStore z M² Android) — plik M2-XXXX-map.json. */
-function mapExportFile() {
-  const selectedName = trackedKeys.find(k => k.key.toLowerCase() === mapState.key.toLowerCase())?.name || 'key';
-  const cleanName = (selectedName || 'key').replace(/[^a-zA-Z0-9-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 12);
-  const payload = {
-    key: mapState.key, filter: '', trackingMode: mapState.mode, running: false,
-    startedAt: mapState.events.size ? Date.now() : 0, events: [...mapState.events.values()]
+// ---------- Plik mapy .m2map (port MapFileStore z M² Android) ----------
+function mapEventToFile(e) {
+  return {
+    packetId: e.packetId ?? e.id, packetHash: e.hash || '', payloadType: Number(e.payloadType ?? -1), timestamp: e.timestamp || '',
+    observedAt: e.observedAt || 0, path: e.path, uncertainAttribution: !!e.uncertainAttribution, longestRouteEligible: !!e.longestRouteEligible,
+    logicalDestinationUnavailable: !!e.logicalDestinationUnavailable, replyToSelected: !!e.replyToSelected, inferredLastHop: !!e.inferredLastHop,
+    closestObservedReply: !!e.closestObservedReply, resolvedPath: e.resolvedPath || [], acceptedKeys: e.acceptedKeys || [mapState.key]
   };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = `M2-${cleanName || 'key'}-map.json`;
-  link.click(); URL.revokeObjectURL(link.href);
+}
+function mapEventFromFile(e, index) {
+  const path = (Array.isArray(e.path) ? e.path : []).map(h => String(h).toUpperCase());
+  return {
+    id: `${e.packetId}|${path.join('>')}|${index}`, packetId: e.packetId, hash: e.packetHash || '', payloadType: e.payloadType, timestamp: e.timestamp || '',
+    observedAt: e.observedAt || 0, path, resolvedPath: Array.isArray(e.resolvedPath) ? e.resolvedPath.map(String) : [],
+    longestRouteEligible: e.longestRouteEligible !== false, replyToSelected: !!e.replyToSelected, uncertainAttribution: !!e.uncertainAttribution,
+    logicalDestinationUnavailable: !!e.logicalDestinationUnavailable, inferredLastHop: !!e.inferredLastHop, closestObservedReply: !!e.closestObservedReply,
+    acceptedKeys: Array.isArray(e.acceptedKeys) ? e.acceptedKeys : []
+  };
+}
+const mapDateStamp = d => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+function mapNextFileName() {
+  const stamp = `${mapKeyShort(mapState.key)}_${mapDateStamp(new Date())}`;
+  const used = JSON.parse(localStorage.getItem('m2-web-map-files-v1') || '[]');
+  let n = 1; while (used.includes(`${stamp}_${String(n).padStart(3, '0')}`)) n++;
+  const name = `${stamp}_${String(n).padStart(3, '0')}`;
+  try { localStorage.setItem('m2-web-map-files-v1', JSON.stringify([...used, name].slice(-500))); } catch {}
+  return name;
+}
+function mapExportFile() {
+  if (!mapState.key || !mapState.events.size) { mapMessage('No map to save'); return; }
+  mapMessage('Exporting map…'); mapProgress(true);
+  try {
+    const name = mapNextFileName();
+    const session = {
+      key: mapState.key, filter: 'ANY', trackingMode: mapState.mode, running: false, startedAt: mapState.startedAt || 0,
+      baseline: Object.fromEntries(mapState.baselineCounts || []), routingRevision: 0,
+      capturedPacketIds: [...new Set([...mapState.events.values()].map(e => e.packetId ?? e.id))], pendingRechecks: [],
+      events: [...mapState.events.values()].map(mapEventToFile)
+    };
+    const blob = new Blob([JSON.stringify({ format: 'M2_MAP', version: 1, name, session })], { type: 'application/octet-stream' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob); link.download = `${name}.m2map`;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+    mapMessage(`Map exported to Downloads/${name}.m2map`);
+  } catch { mapMessage('Cannot save map'); }
+  finally { mapProgress(false); }
 }
 function mapImportFile(file) {
+  mapMessage('Loading map…'); mapProgress(true);
   const reader = new FileReader();
+  reader.onerror = () => { mapProgress(false); mapMessage('Cannot read map file'); };
   reader.onload = () => {
-    try {
-      const parsed = JSON.parse(String(reader.result));
-      const events = Array.isArray(parsed.events) ? parsed.events : [];
-      mapState.key = trackedKeys.some(k => k.key.toLowerCase() === String(parsed.key || '').toLowerCase()) ? parsed.key : (trackedKeys[0]?.key || mapState.key);
-      if (MapCore && MapCore.MODES && MapCore.MODES[parsed.trackingMode]) mapState.mode = parsed.trackingMode;
-      mapState.events.clear();
-      events.forEach(event => mapState.events.set(event.id, event));
-      mapState.running = false; mapState.committed = false; mapState.fitted = false;
-      mapSaveSession(); mapRender();
-    } catch { const status = document.getElementById('map-status'); if (status) status.textContent = 'The selected map file is not valid.'; }
+    mapProgress(false);
+    let parsed;
+    try { parsed = JSON.parse(String(reader.result)); } catch { mapMessage('Cannot read map file'); return; }
+    const session = parsed?.session;
+    if (parsed?.format !== 'M2_MAP' || parsed.version !== 1 || !/^[0-9a-f]{64}$/i.test(String(session?.key || '')) || !Array.isArray(session?.events)) { mapMessage('Cannot load map'); return; }
+    mapCancelFlight();
+    if (!trackedKeys.some(k => k.key.toLowerCase() === session.key.toLowerCase())) {
+      trackedKeys.push({ key: session.key.toLowerCase(), name: '', counterStartedAt: Date.now(), packetCount: 0, seenPacketIds: [] });
+      if (typeof saveTrackedKeys === 'function') saveTrackedKeys();
+    }
+    mapState.key = trackedKeys.find(k => k.key.toLowerCase() === session.key.toLowerCase()).key;
+    if (MapCore.MODES[session.trackingMode]) mapState.mode = session.trackingMode;
+    mapState.events.clear();
+    session.events.map(mapEventFromFile).filter(e => e.path.length > 1).forEach(e => mapState.events.set(e.id, e));
+    mapState.running = false; mapState.committed = true; mapState.startedAt = Number(session.startedAt) || 0;
+    mapState.name = String(parsed.name || file.name.replace(/\.m2map$/i, ''));
+    mapState.focusedKey = '';
+    mapSaveSession(); mapUpdatePanel(); updateMapView();
+    const m = mapMetrics();
+    if (m.edges.length && mapState.view) {
+      const pts = m.edges.flatMap(e => [[e.from.lat, e.from.lon], [e.to.lat, e.to.lon]]);
+      mapState.focusedKey = mapState.key.toLowerCase();
+      mapState.view.fitBounds(pts, { padding: [40, 40] });
+    }
+    mapMessage('Map loaded');
   };
   reader.readAsText(file);
 }
 function mapImportDialog() {
   const input = document.createElement('input');
-  input.type = 'file'; input.accept = 'application/json,.json';
+  input.type = 'file'; input.accept = '.m2map,application/octet-stream,application/json';
   input.addEventListener('change', () => { if (input.files?.[0]) mapImportFile(input.files[0]); });
   input.click();
 }

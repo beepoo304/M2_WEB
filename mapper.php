@@ -4,6 +4,7 @@
 declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 header('X-Content-Type-Options: nosniff');
+if (extension_loaded('zlib') && !ini_get('zlib.output_compression')) ob_start('ob_gzhandler');   // ~1 MB heksów → ~260 KB
 
 const M2_MAPPER_DEFAULT = 'https://meshcoresouth.pl/mapper/api.php';
 const M2_MAPPER_TTL = ['points' => 600, 'repeaters' => 1800];

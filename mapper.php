@@ -7,6 +7,7 @@ header('X-Content-Type-Options: nosniff');
 
 const M2_MAPPER_DEFAULT = 'https://meshcoresouth.pl/mapper/api.php';
 const M2_MAPPER_TTL = ['points' => 600, 'repeaters' => 1800];
+const M2_MAPPER_MAX_FILES = 6;   // kopie różnych API mappera — najstarsze kasowane
 
 function m2_mapper_fail(int $code, string $message): void {
     http_response_code($code);
@@ -33,6 +34,19 @@ if (is_file($cache) && time() - (int) filemtime($cache) < M2_MAPPER_TTL[$action]
     readfile($cache);
     exit;
 }
+
+// Tylko jedno zapytanie naraz pobiera z mappera; reszta dostaje starą kopię albo czeka na świeżą.
+$lock = is_dir($cacheDir) ? @fopen($cache . '.lock', 'c') : false;
+if ($lock && !flock($lock, LOCK_EX | LOCK_NB)) {
+    if (is_file($cache)) { header('Cache-Control: public, max-age=60'); readfile($cache); exit; }
+    flock($lock, LOCK_EX);
+    if (is_file($cache) && time() - (int) filemtime($cache) < M2_MAPPER_TTL[$action]) {
+        header('Cache-Control: public, max-age=120');
+        readfile($cache);
+        exit;
+    }
+}
+@set_time_limit(120);
 
 function m2_cut(string $s): string { return function_exists('mb_substr') ? mb_substr($s, 0, 64) : substr($s, 0, 64); }
 
@@ -78,7 +92,16 @@ try {
         }
     }
     $json = json_encode(['ok' => true, 'at' => time(), 'items' => array_values($out)], JSON_UNESCAPED_UNICODE);
-    if (is_dir($cacheDir)) @file_put_contents($cache, $json, LOCK_EX);
+    if (is_dir($cacheDir)) {
+        @file_put_contents($cache, $json, LOCK_EX);
+        $files = glob($cacheDir . '/mapper-*.json') ?: [];
+        if (count($files) > M2_MAPPER_MAX_FILES) {
+            usort($files, fn($a, $b) => filemtime($a) <=> filemtime($b));
+            foreach (array_slice($files, 0, count($files) - M2_MAPPER_MAX_FILES) as $old) {
+                if ($old !== $cache) { @unlink($old); @unlink($old . '.lock'); }
+            }
+        }
+    }
     header('Cache-Control: public, max-age=120');
     echo $json;
 } catch (Throwable $e) {

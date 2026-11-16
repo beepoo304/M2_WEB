@@ -424,11 +424,28 @@ async function mapLongestClicked() {
   try { stream = await mapRecRequest(); } catch { mapMessage('Screen recording permission denied'); return; }
   mapSetFullscreen(true);
   if (!stream) { setTimeout(() => mapFly(route, edges), 180); return; }   // przeglądarka bez nagrywania ekranu — sam lot
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  if (!stream.active || !mapState.fullscreen) { stream.getTracks().forEach(t => t.stop()); return; }
+  await new Promise(resolve => setTimeout(resolve, 120));
+  mapFlightPrepare(route, edges);                 // jak prepareFlightToken w M²: kadr startowy zanim ruszy nagranie
+  await new Promise(resolve => setTimeout(resolve, 880));
+  if (!stream.active || !mapState.fullscreen) { stream.getTracks().forEach(t => t.stop()); mapCancelFlight(); return; }
   mapRecBegin(stream, key);
   await new Promise(resolve => setTimeout(resolve, 250));
   mapFly(route, edges, mapRecStop);
+}
+
+/** Kadr przed nagraniem: sieć i kropki bez niebieskiej trasy, widok na START (nagranie nie pokaże gotowej trasy). */
+function mapFlightPrepare(route, edges) {
+  const view = mapState.view; if (!view || !mapState.fullscreen) return;
+  mapCancelFlight(true);
+  mapState.flight = { cancelled: false, preparing: true }; mapUpdatePanel();
+  view.invalidateSize();
+  const shared = mapSharedReplySegments(edges, route);
+  mapState.layer.clearLayers(); mapState.flightLayer.clearLayers();
+  mapDrawEdges(mapState.layer, edges, shared);
+  mapDrawNodes(L.layerGroup().addTo(mapState.layer), edges);
+  const [a0, b0] = route;
+  view.options.zoomSnap = 0;
+  mapFlightMove(view, a0.lat, a0.lon, Math.min(mapFlightZoom(MapCore.distanceKm(a0.lat, a0.lon, b0.lat, b0.lon)), mapFitSegmentZoom(a0, b0)));
 }
 
 // ---------- Nagranie lotu (port ScreenRecordingService + dialog „Save animation as MP4?” z NetworkMapScreen.kt) ----------
@@ -502,7 +519,7 @@ async function mapFly(route, edges, onFinished) {
     const dots = L.layerGroup().addTo(layer); mapDrawNodes(dots, edges);
     const totalKm = MapCore.measuredKm(route);
     const [a0, b0] = route;
-    view.setView([a0.lat, a0.lon], Math.min(mapFlightZoom(MapCore.distanceKm(a0.lat, a0.lon, b0.lat, b0.lon)), mapFitSegmentZoom(a0, b0)), { animate: false });
+    mapFlightMove(view, a0.lat, a0.lon, Math.min(mapFlightZoom(MapCore.distanceKm(a0.lat, a0.lon, b0.lat, b0.lon)), mapFitSegmentZoom(a0, b0)));
     let departure = mapBadge(badges, a0, `START · ${a0.hash.toUpperCase()}`);
     if (compass) compass.hidden = false;
     await sleep(900); if (!alive()) return;

@@ -5,7 +5,7 @@
   "description": "M² — MeshCore Live Monitor (web)",
   "scripts": {
     "start": "node dev-server.js",
-    "test": "node --test test/",
+    "test": "node --test test/*.test.js",
     "check": "node --check app.js && node --check map-core.js && node --check map-screen.js && node --check guide.js && node --check guide-data.js && node --check channels-core.js"
   },
   "engines": { "node": ">=20" }

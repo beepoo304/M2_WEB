@@ -4,12 +4,16 @@ const MAP_SESSION_STORAGE = 'm2-web-map-session-v1';
 const MAP_HISTORY_STORAGE = 'm2-web-longest-history-v1';
 const MAP_MAX_EVENTS = 5000;
 const MAP_HISTORY_LIMIT = 1000;
-const MAP_COLORS = { route: '#42d47b', reply: '#f0a84b', gps: '#ab47bc', longest: '#2196f3', record: '#ff6565' };
+const MAP_COLORS = { route: '#2fb866', reply: '#e0902f', gps: '#ab47bc', longest: '#2196f3', record: '#ff6565' };
+const MAP_LINE = { route: { weight: 2.25, opacity: .6 }, gps: { weight: 1.75, opacity: .55, dashArray: '5 6' }, longest: { weight: 4.5, opacity: .9 } };
+// Podkład 1:1 jak meshcoresouth.pl/mapper (tryb „Jasny, wyszarzony”): kafelki OSM + filtr CSS na .leaflet-tile-pane.
+const MAP_TILES = { url: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png', maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>' };
 
 const mapState = {
   key: '', mode: 'ALL_FOR_SELECTED_KEY', running: false, committed: false, events: new Map(),
   directory: [], located: [], directorySource: '', directoryError: '',
   view: null, layer: null, flightLayer: null, flightFrame: 0, fitted: false,
+  edgeLines: new Map(), nodeDots: new Map(), longestLine: null, selectedDot: null, panelOpen: typeof innerWidth === 'number' ? innerWidth >= 640 : true,
   baselineCounts: new Map(), processedCounts: new Map()
 };
 
@@ -165,6 +169,7 @@ function mapRestart() {
 function leaveMap() {
   cancelAnimationFrame(mapState.flightFrame);
   if (mapState.view) { mapState.view.remove(); mapState.view = null; mapState.layer = null; mapState.flightLayer = null; }
+  mapState.edgeLines.clear(); mapState.nodeDots.clear(); mapState.longestLine = null; mapState.selectedDot = null;
 }
 
 function mapRender() {
@@ -177,27 +182,39 @@ function mapRender() {
   const keyOptions = trackedKeys.map(k => `<option value="${escapeHtml(k.key)}" ${k.key.toLowerCase() === mapState.key.toLowerCase() ? 'selected' : ''}>${escapeHtml(k.name || 'Unnamed')} · ${escapeHtml(k.key.slice(0, 4).toUpperCase())}</option>`).join('');
   const modeOptions = Object.entries(MapCore.MODES).map(([id, label]) => `<option value="${id}" ${id === mapState.mode ? 'selected' : ''}>${label}</option>`).join('');
   const lock = mapState.running ? 'disabled' : '';
-  screen.innerHTML = `<section class="map-screen">
-    <div class="eyebrow">NETWORK MAP</div><h1>Map</h1>
-    <div class="map-controls">
-      <label>Tracked key<select id="map-key" ${lock}>${keyOptions}</select></label>
-      <label>Tracking mode<select id="map-mode" ${lock}>${modeOptions}</select></label>
-      <div class="map-buttons">
-        <button type="button" id="map-toggle" class="${mapState.running ? 'map-stop' : 'map-start'}">${mapState.running ? 'Stop' : 'Start'}</button>
-        <button type="button" id="map-restart">Restart</button>
-        <button type="button" id="map-export" title="Export map file">Export</button>
-        <button type="button" id="map-import" title="Load map file">Load</button>
+  screen.innerHTML = `<section class="map-screen map-full">
+    <div id="map-canvas" aria-label="Network map"></div>
+    <div class="map-panel ${mapState.panelOpen ? '' : 'collapsed'}">
+      <div class="map-panel-head">
+        <div><div class="eyebrow">NETWORK MAP</div><b class="map-panel-title">Map</b></div>
+        <button type="button" id="map-panel-toggle" class="map-panel-toggle" aria-expanded="${mapState.panelOpen}" title="Show / hide panel">${mapState.panelOpen ? '−' : '+'}</button>
+      </div>
+      <div class="map-panel-body">
+        <div class="map-controls">
+          <label>Tracked key<select id="map-key" ${lock}>${keyOptions}</select></label>
+          <label>Tracking mode<select id="map-mode" ${lock}>${modeOptions}</select></label>
+        </div>
+        <div class="map-buttons">
+          <button type="button" id="map-toggle" class="${mapState.running ? 'map-stop' : 'map-start'}">${mapState.running ? 'Stop' : 'Start'}</button>
+          <button type="button" id="map-restart">Restart</button>
+          <button type="button" id="map-export" title="Export map file">Export</button>
+          <button type="button" id="map-import" title="Load map file">Load</button>
+        </div>
+        <div class="map-counters">
+          <div><span>Packets</span><b id="map-packets">0</b></div><div><span>Routes</span><b id="map-routes">0</b></div><div><span>Links</span><b id="map-links">0</b></div>
+          <div><span>MAX HOPS</span><b id="map-hops">0</b></div><div><span>Channel packets</span><b id="map-channel-packets">0</b></div><div><span>Distance</span><b id="map-distance">0.00 km</b></div>
+        </div>
+        <button type="button" id="map-longest" class="longest-tile"><span>Longest route</span><b id="map-longest-km">0.00 km</b></button>
+        <p id="map-status" class="map-status" role="status" aria-live="polite"></p>
       </div>
     </div>
-    <div class="map-counters">
-      <div><span>Packets</span><b id="map-packets">0</b></div><div><span>Routes</span><b id="map-routes">0</b></div><div><span>Links</span><b id="map-links">0</b></div>
-      <div><span>MAX HOPS</span><b id="map-hops">0</b></div><div><span>Channel packets</span><b id="map-channel-packets">0</b></div><div><span>Distance</span><b id="map-distance">0.00 km</b></div>
-    </div>
-    <button type="button" id="map-longest" class="longest-tile"><span>Longest route</span><b id="map-longest-km">0.00 km</b></button>
-    <p id="map-status" class="map-status" role="status" aria-live="polite"></p>
-    <div id="map-canvas" aria-label="Network map"></div>
     <div class="map-legend"><span style="--c:${MAP_COLORS.route}">Confirmed route</span><span style="--c:${MAP_COLORS.reply}">Reply to key</span><span style="--c:${MAP_COLORS.longest}">Longest route</span><span style="--c:${MAP_COLORS.gps}">RPT without GPS · 0 km</span></div>
   </section>`;
+  document.getElementById('map-panel-toggle').addEventListener('click', e => {
+    mapState.panelOpen = !mapState.panelOpen;
+    e.currentTarget.closest('.map-panel').classList.toggle('collapsed', !mapState.panelOpen);
+    e.currentTarget.textContent = mapState.panelOpen ? '−' : '+'; e.currentTarget.setAttribute('aria-expanded', mapState.panelOpen);
+  });
   document.getElementById('map-key').addEventListener('change', e => { mapState.key = e.target.value; mapRestart(); });
   document.getElementById('map-mode').addEventListener('change', e => { mapState.mode = e.target.value; mapRestart(); });
   document.getElementById('map-toggle').addEventListener('click', () => (mapState.running ? mapStop() : mapStart()));
@@ -206,13 +223,23 @@ function mapRender() {
   document.getElementById('map-export').addEventListener('click', mapExportFile);
   document.getElementById('map-import').addEventListener('click', mapImportDialog);
   if (typeof L === 'undefined') { document.getElementById('map-status').textContent = 'The map library failed to load.'; return; }
-  mapState.view = L.map('map-canvas', { zoomControl: true, worldCopyJump: false }).setView([52.0, 19.5], 6);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap contributors' }).addTo(mapState.view);
+  mapState.view = L.map('map-canvas', { zoomControl: false, attributionControl: false, worldCopyJump: false, preferCanvas: true, renderer: L.canvas({ padding: .4 }) }).setView([52.0, 19.5], 6);
+  L.control.zoom({ position: 'topright' }).addTo(mapState.view);
+  L.control.attribution({ position: 'bottomright', prefix: false }).addTo(mapState.view);
+  L.tileLayer(MAP_TILES.url, { maxZoom: MAP_TILES.maxZoom, attribution: MAP_TILES.attribution }).addTo(mapState.view);
   mapState.layer = L.layerGroup().addTo(mapState.view);
   mapState.flightLayer = L.layerGroup().addTo(mapState.view);
   mapState.fitted = false;
   updateMapView();
   mapEnsureDirectory().then(() => currentScreen() === 'Map' && updateMapView());
+}
+
+/** Marginesy dopasowania widoku tak, by trasy nie chowały się pod panelem i dolną nawigacją. */
+function mapFitPadding() {
+  const panel = document.querySelector('.map-panel'), wide = innerWidth >= 800;
+  const left = panel && wide ? panel.getBoundingClientRect().right + 24 : 28;
+  const top = panel && !wide ? panel.getBoundingClientRect().bottom + 16 : 28;
+  return { paddingTopLeft: [left, top], paddingBottomRight: [60, wide ? 120 : 100] };
 }
 
 function mapLabel(point) { return escapeHtml(point.name || point.hash); }
@@ -230,22 +257,44 @@ function updateMapView() {
       : !mapState.running && !mapState.events.size ? 'Press Start to collect routes for the selected key.'
       : mapState.running ? 'Tracking… routes are added with every Live refresh.' : mapState.committed ? 'Stopped. The longest route of this session was saved.' : '';
   }
-  mapState.layer.clearLayers();
-  const bounds = [];
-  const dot = (point, color, radius) => L.circleMarker([point.lat, point.lon], { radius, color, weight: 2, fillColor: '#111315', fillOpacity: 1 })
-    .bindTooltip(mapLabel(point), { direction: 'top', className: 'm2-tip' }).addTo(mapState.layer);
+  // Rysowanie przyrostowe: istniejące linie/punkty zostają, aktualizowane są tylko zmiany (brak migania przy odświeżeniu Live).
+  const bounds = [], seenEdges = new Set(), seenDots = new Set();
+  const dotColor = new Map();
+  const pointId = point => `${point.lat.toFixed(5)},${point.lon.toFixed(5)}`;
+  const claimDot = (point, color) => {
+    const id = pointId(point), prev = dotColor.get(id);
+    // priorytet koloru punktu: zwykła trasa > odpowiedź > brak GPS
+    if (!prev || (prev.color === MAP_COLORS.gps && color !== MAP_COLORS.gps) || (prev.color === MAP_COLORS.reply && color === MAP_COLORS.route)) dotColor.set(id, { point, color });
+  };
   m.edges.forEach(edge => {
-    const color = edge.missingGps ? MAP_COLORS.gps : edge.reply ? MAP_COLORS.reply : MAP_COLORS.route;
-    L.polyline([[edge.from.lat, edge.from.lon], [edge.to.lat, edge.to.lon]], { color, weight: edge.missingGps ? 2 : 3, opacity: .85, dashArray: edge.missingGps ? '6 6' : null }).addTo(mapState.layer);
-    dot(edge.from, color, 5); dot(edge.to, color, 5);
-    bounds.push([edge.from.lat, edge.from.lon], [edge.to.lat, edge.to.lon]);
+    const kind = edge.missingGps ? 'gps' : edge.reply ? 'reply' : 'route';
+    const color = MAP_COLORS[kind], style = edge.missingGps ? MAP_LINE.gps : MAP_LINE.route;
+    const latlngs = [[edge.from.lat, edge.from.lon], [edge.to.lat, edge.to.lon]];
+    seenEdges.add(edge.id);
+    const line = mapState.edgeLines.get(edge.id);
+    if (line) line.setLatLngs(latlngs);
+    else mapState.edgeLines.set(edge.id, L.polyline(latlngs, { color, lineCap: 'round', ...style }).addTo(mapState.layer));
+    claimDot(edge.from, color); claimDot(edge.to, color);
+    bounds.push(...latlngs);
   });
-  if (m.longestRoute.length > 1) {
-    L.polyline(m.longestRoute.map(p => [p.lat, p.lon]), { color: MAP_COLORS.longest, weight: 5, opacity: .95 }).addTo(mapState.layer);
-  }
+  mapState.edgeLines.forEach((line, id) => { if (!seenEdges.has(id)) { mapState.layer.removeLayer(line); mapState.edgeLines.delete(id); } });
+  dotColor.forEach(({ point, color }, id) => {
+    seenDots.add(id);
+    const dot = mapState.nodeDots.get(id);
+    if (dot) { if (dot.options.color !== color) dot.setStyle({ color }); }
+    else mapState.nodeDots.set(id, L.circleMarker([point.lat, point.lon], { radius: 4.5, color, weight: 2, opacity: .9, fillColor: '#ffffff', fillOpacity: 1 })
+      .bindTooltip(mapLabel(point), { direction: 'top', className: 'm2-tip' }).addTo(mapState.layer));
+  });
+  mapState.nodeDots.forEach((dot, id) => { if (!seenDots.has(id)) { mapState.layer.removeLayer(dot); mapState.nodeDots.delete(id); } });
+  const longest = m.longestRoute.length > 1 ? m.longestRoute.map(p => [p.lat, p.lon]) : null;
+  if (longest && mapState.longestLine) mapState.longestLine.setLatLngs(longest).bringToFront();
+  else if (longest) mapState.longestLine = L.polyline(longest, { color: MAP_COLORS.longest, lineCap: 'round', ...MAP_LINE.longest }).addTo(mapState.layer);
+  else if (mapState.longestLine) { mapState.layer.removeLayer(mapState.longestLine); mapState.longestLine = null; }
   const selected = mapState.located.find(n => n.key.toLowerCase() === mapState.key.toLowerCase());
-  if (selected) { L.circleMarker([selected.lat, selected.lon], { radius: 8, color: '#fff', weight: 2, fillColor: MAP_COLORS.route, fillOpacity: 1 }).bindTooltip(escapeHtml(selected.name || selected.key.slice(0, 4)), { className: 'm2-tip' }).addTo(mapState.layer); }
-  if (bounds.length && !mapState.fitted) { mapState.view.fitBounds(bounds, { padding: [24, 24], maxZoom: 11 }); mapState.fitted = true; }
+  if (selected && !mapState.selectedDot) mapState.selectedDot = L.circleMarker([selected.lat, selected.lon], { radius: 7, color: '#fff', weight: 2, fillColor: MAP_COLORS.route, fillOpacity: 1 }).bindTooltip(escapeHtml(selected.name || selected.key.slice(0, 4)), { className: 'm2-tip' }).addTo(mapState.layer);
+  else if (selected) mapState.selectedDot.setLatLng([selected.lat, selected.lon]).bringToFront();
+  else if (mapState.selectedDot) { mapState.layer.removeLayer(mapState.selectedDot); mapState.selectedDot = null; }
+  if (bounds.length && !mapState.fitted) { mapState.view.fitBounds(bounds, { ...mapFitPadding(), maxZoom: 11 }); mapState.fitted = true; }
 }
 
 /** Animowany lot po najdłuższej trasie: północ u góry, bieżący odcinek i dystans, na końcu suma. */
@@ -261,7 +310,7 @@ function mapFlight() {
   const segments = route.slice(1).map((b, i) => ({ a: route[i], b, km: MapCore.distanceKm(route[i].lat, route[i].lon, b.lat, b.lon) }));
   const total = segments.reduce((s, x) => s + x.km, 0);
   const duration = Math.min(25000, Math.max(6000, total * 40));
-  const trail = L.polyline([[route[0].lat, route[0].lon]], { color: MAP_COLORS.longest, weight: 6 }).addTo(mapState.flightLayer);
+  const trail = L.polyline([[route[0].lat, route[0].lon]], { color: MAP_COLORS.longest, weight: 5, opacity: .95, lineCap: 'round' }).addTo(mapState.flightLayer);
   const plane = L.circleMarker([route[0].lat, route[0].lon], { radius: 8, color: '#fff', weight: 2, fillColor: MAP_COLORS.longest, fillOpacity: 1 }).addTo(mapState.flightLayer);
   const badge = L.tooltip({ permanent: true, direction: 'top', className: 'm2-tip m2-badge', offset: [0, -10] }).setContent('').setLatLng([route[0].lat, route[0].lon]).addTo(mapState.flightLayer);
   mapState.view.setView([route[0].lat, route[0].lon], 9, { animate: false });
@@ -278,7 +327,7 @@ function mapFlight() {
     badge.setContent(done >= 1 ? `TOTAL ${mapKm(total)}` : `${escapeHtml(seg.a.hash)} → ${escapeHtml(seg.b.hash)} · ${mapKm(seg.km)}`);
     mapState.view.panTo([lat, lon], { animate: false });
     if (done < 1) mapState.flightFrame = requestAnimationFrame(frame);
-    else mapState.view.fitBounds(route.map(p => [p.lat, p.lon]), { padding: [40, 40], maxZoom: 11 });
+    else mapState.view.fitBounds(route.map(p => [p.lat, p.lon]), { ...mapFitPadding(), maxZoom: 11 });
   };
   mapState.flightFrame = requestAnimationFrame(frame);
 }

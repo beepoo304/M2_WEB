@@ -250,31 +250,50 @@ button { color: inherit; font: inherit; }
 .guide-link { color:#2196f3; font-size:13px; text-decoration:none; padding:6px 0; }
 .guide-link:hover { text-decoration:underline; }
 
-/* ===== Map screen (port NetworkMapScreen z M² Android) ===== */
-.map-screen h1 { margin:8px 0 18px; font-size:clamp(28px,4vw,40px); letter-spacing:-.035em; }
-.map-controls { display:flex; flex-wrap:wrap; align-items:flex-end; gap:14px; margin-bottom:14px; }
-.map-controls label { display:flex; flex-direction:column; gap:6px; color:var(--on-surface-variant); font:600 10px "Roboto Mono",Consolas,monospace; letter-spacing:.08em; }
-.map-controls select { min-width:190px; border:1px solid var(--outline); border-radius:10px; padding:10px 12px; color:var(--on-surface); background:var(--surface); }
-.map-buttons { display:flex; gap:8px; margin-left:auto; }
-.map-buttons button { border:1px solid var(--outline); border-radius:10px; padding:10px 14px; background:var(--surface-variant); color:var(--on-surface); font-weight:650; cursor:pointer; }
+/* ===== Map screen (port NetworkMapScreen z M² Android) — pełny ekran ===== */
+body.map-fullscreen { overflow:hidden; }
+body.map-fullscreen .app-shell { height:100dvh; }
+body.map-fullscreen .screen { position:relative; width:100%; max-width:none; margin:0; padding:0; min-height:0; }
+.map-full { position:absolute; inset:0; isolation:isolate; }
+#map-canvas { position:absolute; inset:0; background:#dfe7ea; }
+/* Podkład 1:1 jak meshcoresouth.pl/mapper — „Jasny, wyszarzony” */
+#map-canvas .leaflet-tile-pane { filter:grayscale(1) contrast(.75) brightness(1.13); }
+#map-canvas.leaflet-container { font:inherit; background:#dfe7ea; }
+#map-canvas .leaflet-control-attribution { margin:0 4px 4px 0; border-radius:6px; font-size:10.5px; }
+#map-canvas .leaflet-bottom { bottom:calc(84px + env(safe-area-inset-bottom)); }
+#map-canvas .leaflet-control-zoom { border:1px solid var(--outline); border-radius:10px; overflow:hidden; box-shadow:0 6px 20px #0003; }
+#map-canvas .leaflet-control-zoom a { width:34px; height:34px; line-height:32px; background:var(--surface); color:var(--on-surface); border-color:var(--outline); }
+#map-canvas .leaflet-control-zoom a:hover { background:var(--surface-variant); color:var(--primary); }
+.map-panel { position:absolute; z-index:500; top:14px; left:14px; width:min(380px, calc(100% - 28px)); max-height:calc(100% - 28px - 96px); overflow:auto; padding:14px; border:1px solid var(--outline); border-radius:16px; background:#171a1ceb; backdrop-filter:blur(14px); box-shadow:0 14px 40px #0006; }
+.map-panel-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+.map-panel-title { display:block; margin-top:3px; font-size:20px; letter-spacing:-.02em; }
+.map-panel-toggle { width:32px; height:32px; flex:none; display:grid; place-items:center; border:1px solid var(--outline); border-radius:9px; background:var(--surface-variant); color:var(--primary); font-size:20px; line-height:1; cursor:pointer; }
+.map-panel.collapsed { width:auto; }
+.map-panel.collapsed .map-panel-body { display:none; }
+.map-panel-body { margin-top:12px; }
+.map-controls { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px; }
+.map-controls label { display:flex; flex-direction:column; gap:5px; min-width:0; color:var(--on-surface-variant); font:600 9px "Roboto Mono",Consolas,monospace; letter-spacing:.08em; }
+.map-controls select { width:100%; min-width:0; border:1px solid var(--outline); border-radius:9px; padding:8px 9px; color:var(--on-surface); background:var(--surface); font-size:12px; }
+.map-buttons { display:grid; grid-template-columns:repeat(4,1fr); gap:6px; margin-bottom:10px; }
+.map-buttons button { border:1px solid var(--outline); border-radius:9px; padding:8px 6px; background:var(--surface-variant); color:var(--on-surface); font-size:12px; font-weight:650; cursor:pointer; }
 .map-buttons .map-start { border-color:#67d78a55; color:var(--primary); }
 .map-buttons .map-stop { border-color:#ff6b6b55; color:var(--error); }
-.map-counters { display:grid; grid-template-columns:repeat(6,1fr); gap:10px; margin-bottom:12px; }
-.map-counters div { padding:12px; border:1px solid var(--outline); border-radius:13px; background:var(--surface); }
-.map-counters span { display:block; color:var(--on-surface-variant); font:600 9px "Roboto Mono",Consolas,monospace; letter-spacing:.09em; }
-.map-counters b { display:block; margin-top:5px; font:700 20px "Roboto Mono",Consolas,monospace; }
-.longest-tile { width:100%; display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 12px; padding:14px 16px; border:1px solid #68f69b40; border-radius:13px; background:radial-gradient(120% 160% at 0% 0%, #1c3a2a 0%, transparent 60%), var(--surface); color:var(--on-surface); text-align:left; cursor:pointer; }
-.longest-tile span { color:var(--on-surface-variant); font:600 10px "Roboto Mono",Consolas,monospace; letter-spacing:.09em; }
-.longest-tile b { font:700 22px "Roboto Mono",Consolas,monospace; color:var(--primary); }
+.map-counters { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin-bottom:8px; }
+.map-counters div { padding:8px 9px; border:1px solid var(--outline); border-radius:10px; background:var(--surface); }
+.map-counters span { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--on-surface-variant); font:600 8px "Roboto Mono",Consolas,monospace; letter-spacing:.08em; text-transform:uppercase; }
+.map-counters b { display:block; margin-top:3px; font:700 15px "Roboto Mono",Consolas,monospace; font-variant-numeric:tabular-nums; }
+.longest-tile { width:100%; display:flex; align-items:center; justify-content:space-between; gap:12px; margin:0 0 8px; padding:10px 12px; border:1px solid #68f69b40; border-radius:11px; background:radial-gradient(120% 160% at 0% 0%, #1c3a2a 0%, transparent 60%), var(--surface); color:var(--on-surface); text-align:left; cursor:pointer; }
+.longest-tile span { color:var(--on-surface-variant); font:600 9px "Roboto Mono",Consolas,monospace; letter-spacing:.09em; text-transform:uppercase; }
+.longest-tile b { font:700 18px "Roboto Mono",Consolas,monospace; color:var(--primary); }
 .longest-tile b.record-km { color:var(--error); }
-.map-status { min-height:22px; margin:0 0 12px; color:var(--on-surface-variant); font:11px "Roboto Mono",Consolas,monospace; }
-#map-canvas { height:min(56dvh,560px); border:1px solid var(--outline); border-radius:16px; overflow:hidden; background:var(--surface); }
-.map-legend { display:flex; flex-wrap:wrap; gap:16px; margin-top:12px; color:var(--on-surface-variant); font:10px "Roboto Mono",Consolas,monospace; }
+.map-status { min-height:0; margin:0; color:var(--on-surface-variant); font:10px/1.5 "Roboto Mono",Consolas,monospace; }
+.map-legend { position:absolute; z-index:500; left:14px; bottom:calc(92px + env(safe-area-inset-bottom)); display:flex; flex-wrap:wrap; gap:6px 14px; max-width:calc(100% - 28px); padding:8px 12px; border:1px solid #0000001a; border-radius:10px; background:#ffffffd9; color:#2c3438; font:600 10px "Roboto Mono",Consolas,monospace; box-shadow:0 4px 14px #0002; }
 .map-legend span { display:flex; align-items:center; gap:6px; }
 .map-legend span::before { content:""; width:16px; height:3px; border-radius:2px; background:var(--c); }
 .m2-tip { border:1px solid var(--outline); border-radius:8px; padding:4px 8px; background:var(--surface-variant); color:var(--on-surface); font:600 10px "Roboto Mono",Consolas,monospace; }
 .m2-badge { border-color:#68f69b66; color:var(--primary); }
-@media (max-width:640px){ .map-counters { grid-template-columns:repeat(2,1fr); } .map-buttons { margin-left:0; width:100%; } .map-buttons button { flex:1; } }
+@media (min-width:800px) { body.map-fullscreen .screen { padding:0; } .map-legend { bottom:104px; } #map-canvas .leaflet-bottom { bottom:0; } }
+@media (max-width:640px) { #map-canvas .leaflet-control-zoom { display:none; } .map-panel { top:10px; left:10px; width:calc(100% - 20px); max-height:calc(100% - 20px - 150px); padding:12px; } .map-counters b { font-size:14px; } .map-legend { left:10px; gap:4px 10px; font-size:9px; } }
 
 /* ===== Dialogi (Add channel / Rename / Message details / API log / RPT help) ===== */
 .dialog-backdrop { position:fixed; z-index:9; inset:0; display:grid; place-items:center; padding:18px; background:#000a; backdrop-filter:blur(5px); }

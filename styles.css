@@ -142,6 +142,19 @@ button { color: inherit; font: inherit; }
 .detail-key-matches { display:flex; flex-direction:column; align-items:flex-start; gap:7px; margin:8px 0 16px; }
 .matched-hop { margin-left:5px; padding:2px 5px; border-radius:5px; color:var(--on-primary); background:var(--primary); font:600 10px "Segoe UI",system-ui,sans-serif; white-space:nowrap; }
 .route-hop-tracked { color:var(--primary); font-weight:800; }
+.route-hop-nogps { color:#ab47bc; font-weight:800; }
+.packet-detail > p { margin:0 0 9px; font-size:13px; line-height:1.5; overflow-wrap:anywhere; }
+.packet-detail .detail-subtitle { color:var(--on-surface-variant); }
+.packet-detail .detail-one-byte { display:block; color:#78909c; }
+.packet-detail .detail-message-text { color:#2196f3; }
+.packet-detail .detail-label { display:block; margin-bottom:5px; font-weight:600; font-size:13px; }
+.packet-detail .detail-key-matches { display:flex; flex-direction:column; align-items:flex-start; gap:5px; margin:4px 0 12px; }
+.packet-detail .detail-key-block { margin:4px 0 10px; }
+.packet-detail .detail-key-block code { display:block; font:12px "Roboto Mono",Consolas,monospace; overflow-wrap:anywhere; color:var(--on-surface-variant); }
+.packet-detail .detail-mono { font:11px "Roboto Mono",Consolas,monospace; color:var(--on-surface-variant); }
+.packet-detail .detail-raw { display:-webkit-box; -webkit-line-clamp:6; -webkit-box-orient:vertical; overflow:hidden; }
+.observed-route .route-relations { display:flex; flex-wrap:wrap; gap:5px; margin-top:6px; }
+.observed-route > small { display:block; margin-top:4px; color:var(--on-surface-variant); font:11px "Roboto Mono",Consolas,monospace; }
 .route-hop-reply { color:#f0b75e; font-weight:800; }
 .route-excluded-note { color:var(--on-surface-variant); font-size:12px; padding:7px 0; }
 .route-toggle { margin:8px 0; border:1px solid var(--outline); border-radius:8px; padding:7px 10px; color:var(--primary); background:var(--surface-variant); cursor:pointer; font-size:12px; }

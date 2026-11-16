@@ -675,7 +675,7 @@ function handleLiveClick(event) {
   const copyHash=target.closest('.copy-packet-hash');
   if(copyHash){ copyValue(liveState.selected?.hash,copyHash); return; }
   const copyKey=target.closest('.copy-source-key');
-  if(copyKey){ const decoded=parseDecoded(liveState.details?.packet||liveState.selected||{}); copyValue(decoded.pubKey||decoded.publicKey||decoded.srcPubKey||decoded.srcKey,copyKey); }
+  if(copyKey&&liveState.selected){ copyValue(detailKey(liveState.selected),copyKey); }
 }
 screen.addEventListener('click',handleLiveClick);
 async function copyValue(value,button) { if(!value)return; try{await navigator.clipboard.writeText(value);const old=button.textContent;button.textContent='Copied';setTimeout(()=>{if(button.isConnected)button.textContent=old;},1200);}catch{button.textContent='Copy unavailable';} }
@@ -687,52 +687,100 @@ async function loadPacketDetails(packet, rerender=renderLiveDetail) {
   catch(error) { liveState.detailsError=error.message||'Could not load packet observations'; }
   finally { liveState.detailsLoading=false; rerender(); }
 }
+// PacketObservationRepository.parse: one route per observation, invalid paths
+// skipped, deduplicated by path + observer, sorted by length then path text.
+function detailRoutes(details) {
+  const observations=Array.isArray(details?.observations)?details.observations:Array.isArray(details?.packet?.observations)?details.packet.observations:[];
+  const seen=new Set(), routes=[];
+  observations.forEach(observation=>{
+    let parts;
+    try { parts=JSON.parse(observation.path_json||''); } catch { return; }
+    if(!Array.isArray(parts))return;
+    const path=parts.map(hop=>String(hop??'').trim().toUpperCase());
+    const observerKey=String(observation.observer_id||'');
+    const id=`${path.join(',')}|${observerKey.toLowerCase()}`;
+    if(seen.has(id))return;
+    seen.add(id);
+    routes.push({path,resolved:Array.isArray(observation.resolved_path)?observation.resolved_path.map(value=>String(value??'')):[],observerName:String(observation.observer_name||'').trim()||'Unknown observer',observerKey,rssi:observation.rssi,snr:observation.snr});
+  });
+  return routes.sort((a,b)=>a.path.length-b.path.length||a.path.join(', ').localeCompare(b.path.join(', ')));
+}
+// TrackedKeyMatcher.resolvedRoute + observer: relations carried by one route.
+function routeRelations(route) {
+  const out=[], add=(relation,item)=>{if(item&&!out.some(match=>match.relation===relation&&match.key===item.key))out.push({relation,key:item.key,name:item.name});};
+  route.path.forEach((hop,index)=>{
+    if(!reliableHash(hop))return;
+    const resolved=route.resolved[index]||'';
+    const item=resolved?(resolved.toLowerCase().startsWith(hop.toLowerCase())?exactTrackedKey(resolved):null):uniqueKeyForHash(hop);
+    add(index===route.path.length-1?trackedRelations.end:trackedRelations.route,item);
+  });
+  add(trackedRelations.observer,exactTrackedKey(route.observerKey));
+  return out;
+}
+function hashSizeBytes(routes) { const sizes=new Set(routes.flatMap(route=>route.path.map(hop=>hop.length/2)).filter(size=>size>0)); return sizes.size===1?[...sizes][0]:null; }
+function detailKey(packet) { const decoded=parseDecoded(packet); return String(decoded.pubKey||'').trim()||String(packet.observer_id||''); }
+function relationLabelMarkup(matches) { return relationLabels(matches).map(match=>`<b class="relation-chip ${match.relation===trackedRelations.reply?'reply':''}" title="${escapeHtml(keyName(match.key))}">${escapeHtml(match.label)}</b>`).join(''); }
+// Layout and wording of M² PacketDetailsDialog (LiveLogScreen.kt).
 function renderDetail(packet) {
-  const source = liveState.details?.packet || packet;
-  const decoded = parseDecoded(source), path = packetPath(source), matches = matchesForPacket(source);
-  const fields = [
-    ['Sender', decoded.sender || decoded.name || 'Unknown sender'], ['Sender hash', decoded.srcHash || (decoded.pubKey?String(decoded.pubKey).slice(0,4).toUpperCase():null)], ['Payload type', decoded.type || packetType(packet)], ['Channel', decoded.channel],
-    ['Observer', packet.observer_name], ['Observer region', packet.observer_iata], ['Observer key', packet.observer_id],
-    ['Direction', (packet.direction || 'rx').toUpperCase()], ['Packet time', new Date(packet.timestamp || packet.first_seen).toLocaleString('pl-PL',{timeZone:'Europe/Warsaw'})],
-    ['Path', path.length ? path.join('  ›  ') : 'Direct / no path'], ['RSSI', packet.rssi == null ? null : `${packet.rssi} dBm`], ['SNR', packet.snr == null ? null : `${packet.snr} dB`],
-    ['Observations', liveState.details?.observation_count ?? packet.observation_count], ['Payload size', packet.raw_hex ? `${Math.floor(packet.raw_hex.length/2)} bytes` : null],
-    ['Position', decoded.lat != null && decoded.lon != null ? `${decoded.lat}, ${decoded.lon}` : null], ['Public key', decoded.pubKey||decoded.publicKey||decoded.srcPubKey||decoded.srcKey], ['Signature valid', decoded.signatureValid == null ? null : String(decoded.signatureValid)]
-  ].filter(([,value]) => value != null && value !== '');
-  const decodedFields = Object.entries(decoded).filter(([key])=>!['text','name','sender','type','channel','lat','lon','pubKey','signature','signatureValid'].includes(key));
-  const observations = Array.isArray(liveState.details?.observations) ? liveState.details.observations : [];
-  const routeGroups = new Map();
-  observations.forEach(observation=>{let route=[];try{route=JSON.parse(observation.path_json||'[]')}catch{};const resolved=Array.isArray(observation.resolved_path)?observation.resolved_path:[];const key=route.join('/');if(!routeGroups.has(key))routeGroups.set(key,{path:route,resolved,observers:[]});routeGroups.get(key).observers.push(observation);});
-  const allRoutes=[...routeGroups.values()].sort((a,b)=>a.path.length-b.path.length);
-  const excludedOneByteRoutes=allRoutes.filter(route=>route.path.some(hop=>String(hop).length<4)).length;
-  const eligibleRoutes=allRoutes.filter(route=>route.path.every(reliableHash));
-  const routeRelations=new Map(eligibleRoutes.map(route=>[route,relationMatches({...source,path_json:JSON.stringify(route.path),resolved_path:route.resolved,observer_id:route.observers[0]?.observer_id})]));
-  const trackedRoutes=eligibleRoutes.filter(route=>(routeRelations.get(route)||[]).length>0);
-  const showAllRoutes=!!liveState.showAllRoutes;
-  const displayedRoutes=!showAllRoutes&&trackedRoutes.length?trackedRoutes:eligibleRoutes;
-  const hashWidth=eligibleRoutes.length ? new Set(eligibleRoutes.flatMap(route=>route.path.map(hop=>String(hop).length/2))).size===1 ? String(eligibleRoutes[0].path[0]||'').length/2 : null : null;
-  const routeMarkup = displayedRoutes.map(route=>{
-    const routeMatches=routeRelations.get(route)||[];
-    const chain=route.path.map((hop,index)=>{
-      const item=uniqueKeyForHash(hop), relation=index===route.path.length-1?trackedRelations.end:trackedRelations.route;
-      const isMatched=!!item&&routeMatches.some(match=>match.key===item.key&&match.relation===relation);
-      return `<span class="${isMatched?'route-hop-tracked':''}">${escapeHtml(hop)}</span>${item&&isMatched?` <b class="matched-hop">${escapeHtml(item.name||keyName(item.key))}</b>`:''}`;
-    }).join(' <span class="route-arrow">›</span> ');
-    const noGps=route.path.filter((hop,index)=>confirmedMissingGps(hop,route.resolved[index]||'')).map(hop=>String(hop).slice(0,4).toUpperCase());
-    const observerMarkup=route.observers.map(item=>{
-      const matches=relationMatches({...source,path_json:JSON.stringify(route.path),resolved_path:route.resolved,observer_id:item.observer_id});
-      const reported=matches.some(match=>match.relation===trackedRelations.observer);
-      const observerMatch=matches.find(match=>match.relation===trackedRelations.observer);
-      const observerKey=reported ? ` · ${escapeHtml(String(observerMatch?.key||'').slice(0,4).toUpperCase())}` : '';
-      const rssi=item.rssi==null?'RSSI —':`${escapeHtml(item.rssi)} dBm`;
-      const snr=item.snr==null?'SNR —':`${escapeHtml(item.snr)} dB`;
-      const relationMarkup=matches.map(match=>`<b class="relation-chip ${match.relation===trackedRelations.reply?'reply':''}">${escapeHtml(match.relation)} · ${escapeHtml(match.name||keyName(match.key))}</b>`).join('');
-      return `<div class="route-observer ${reported?'tracked-observer':''}">Observed by ${escapeHtml(item.observer_name||'Unknown observer')}${observerKey} · ${escapeHtml(item.observer_iata||'—')} · ${rssi} · ${snr}${relationMarkup}</div>`;
-    }).join('');
-    const gpsMarkup=noGps.map(hash=>`<b class="no-gps">NO GPS FOR ${escapeHtml(hash)}</b>`).join('');
-    return `<div class="observed-route">${gpsMarkup}<code>${chain||'Direct / no route'}</code><small>${Math.max(0,route.path.length-1)} hops · ${route.observers.length} observation${route.observers.length===1?'':'s'}</small>${observerMarkup}</div>`;
-  }).join('');
-  const sourceKey=decoded.pubKey||decoded.publicKey||decoded.srcPubKey||decoded.srcKey;
-  return `<div class="packet-detail-backdrop"><section class="packet-detail" role="dialog" aria-modal="true" aria-label="Packet details"><button class="detail-close" aria-label="Close packet details"><span aria-hidden="true">×</span><b>Close</b></button><div class="eyebrow">PACKET DETAILS · ${escapeHtml(packetType(packet))} · ${(packet.direction || 'rx').toUpperCase()}</div><h2>${escapeHtml(decoded.sender || decoded.name || 'Mesh packet')}</h2><p class="detail-message">${escapeHtml(packetSummary(source))}</p>${matches.length?`<div class="detail-key-matches">${matches.map(match=>`<b class="relation-chip ${match.relation===trackedRelations.reply?'reply':''}">${escapeHtml(match.relation)} · ${escapeHtml(match.name||keyName(match.key))}</b>`).join('')}</div>`:''}<dl>${fields.map(([key,value])=>`<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>${liveState.detailsLoading?'<p class="details-loading">Loading all observations and routes…</p>':''}${liveState.detailsError?`<p class="details-error">Could not load additional routes: ${escapeHtml(liveState.detailsError)}</p>`:''}${excludedOneByteRoutes?`<p class="route-excluded-note">1-byte routes excluded: ${excludedOneByteRoutes}</p>`:''}${eligibleRoutes.length?`<section class="observed-routes"><h3>${trackedRoutes.length&&!showAllRoutes?'TRACKED ROUTES':'OBSERVED ROUTES'} · ${displayedRoutes.length} ROUTES / ${observations.length} OBSERVATIONS</h3>${hashWidth?`<p class="route-hash-width">Path hashes: ${hashWidth} ${hashWidth===1?'byte':'bytes'} per hop</p>`:''}${routeMarkup}${trackedRoutes.length<eligibleRoutes.length?`<button class="route-toggle" type="button">${showAllRoutes?'Show tracked routes':`Show all ${eligibleRoutes.length} routes`}</button>`:''}</section>`:''}${decodedFields.length?`<div class="decoded-block"><span>DECODED FIELDS</span>${decodedFields.map(([key,value])=>`<div><b>${escapeHtml(key)}</b><code>${escapeHtml(typeof value==='object'?JSON.stringify(value):value)}</code></div>`).join('')}</div>`:''}${packet.raw_hex?`<div class="raw-block"><span>RAW HEX</span><code>${escapeHtml(packet.raw_hex)}</code></div>`:''}<div class="detail-actions"><button class="copy-packet-hash" type="button">Copy packet hash</button><button class="detail-close-secondary" type="button">Close packet</button>${sourceKey?'<button class="copy-source-key" type="button">Copy source key</button>':''}</div></section></div>`;
+  const decoded=parseDecoded(packet), path=packetPath(packet), matches=enhancedMatches(packet);
+  const oneByte=path.some(hop=>hop.length===2&&/^[a-f\d]{2}$/i.test(hop));
+  const parts=[`<p class="detail-subtitle">${escapeHtml(packetType(packet))} · ${escapeHtml(packetTime(packet))}</p>`];
+  if(oneByte)parts.push('<p class="one-byte-marker detail-one-byte">1 byte</p>');
+  if(Number(packet.payload_type)===5){
+    const sender=String(decoded.sender||'');
+    const srcHash=String(decoded.srcHash||'').trim(), pubKey=String(decoded.pubKey||'').trim();
+    const senderHash=reliableHash(srcHash)?srcHash:/^[a-f\d]{64}$/i.test(pubKey)?pubKey.slice(0,4):'';
+    parts.push(`<p class="detail-channel"><b>Channel: ${escapeHtml(String(decoded.channel||'').trim()||'Private channel')}</b></p>`);
+    if(sender.trim())parts.push(`<p>Sender: ${escapeHtml(sender)}<br>Sender hash: ${escapeHtml(senderHash?senderHash.toUpperCase():'unavailable')}</p>`);
+    parts.push(`<p class="detail-message-text">${decoded.text?renderTrackedText(decoded.text):'Message content is not available'}</p>`);
+  }
+  if(matches.length)parts.push(`<div class="detail-key-matches"><b class="detail-label">Tracked key matches</b>${relationLabelMarkup(matches)}</div>`);
+  const details=liveState.details;
+  const allRoutes=details?detailRoutes(details):[];
+  const excluded=allRoutes.filter(route=>route.path.some(hop=>hop.length<4)).length;
+  const routes=allRoutes.filter(route=>route.path.every(reliableHash));
+  const relationsByRoute=new Map(routes.map(route=>[route,routeRelations(route)]));
+  const trackedRoutes=routes.filter(route=>relationsByRoute.get(route).length>0);
+  const showAll=!!liveState.showAllRoutes;
+  const displayed=!showAll&&trackedRoutes.length?trackedRoutes:routes;
+  if(excluded)parts.push(`<p class="route-excluded-note">1-byte routes excluded: ${excluded}</p>`);
+  if(!details){
+    parts.push(`<p>Route: ${escapeHtml(path.length?path.join(' → '):'Direct / unavailable')}</p>`);
+    if(liveState.detailsLoading)parts.push('<p class="details-loading">Loading all observations and routes…</p>');
+    if(liveState.detailsError)parts.push(`<p class="details-error">Could not load additional routes: ${escapeHtml(liveState.detailsError)}</p>`);
+  } else if(!routes.length) parts.push('<p>No eligible recorded route</p>');
+  else {
+    const bytes=hashSizeBytes(routes);
+    parts.push(`<section class="observed-routes"><h3>${trackedRoutes.length&&!showAll?`Tracked routes (${trackedRoutes.length})`:`Observed routes (${routes.length})`}</h3>${bytes?`<p class="route-hash-width">Path hashes: ${bytes} ${bytes===1?'byte':'bytes'} per hop</p>`:''}${displayed.map(route=>{
+      const relations=relationsByRoute.get(route);
+      const observerHash=relations.filter(match=>match.relation===trackedRelations.observer).length===1?relations.find(match=>match.relation===trackedRelations.observer).key.slice(0,4).toUpperCase():null;
+      const shown=[...route.path];
+      if(observerHash){
+        const last=shown.at(-1);
+        if(last&&last.toUpperCase()===observerHash){}
+        else if(last&&last.length===2&&observerHash.startsWith(last.toUpperCase()))shown[shown.length-1]=observerHash;
+        else shown.push(observerHash);
+      }
+      const chain=shown.map((hop,index)=>{
+        const resolved=route.resolved[index]||'';
+        const confirmed=!!exactTrackedKey(resolved)||!!uniqueKeyForHash(reliableHash(hop)?hop:'');
+        const noGps=confirmedMissingGps(hop,resolved);
+        return noGps?`<span class="route-hop-nogps">${escapeHtml(hop)}</span>`:confirmed?`<span class="route-hop-tracked">${escapeHtml(hop)}</span>`:escapeHtml(hop);
+      }).join(' <span class="route-arrow">→</span> ');
+      const noGpsLines=shown.filter(hop=>confirmedMissingGps(hop)).map(hop=>`<b class="no-gps">NO GPS FOR ${escapeHtml(hop)}</b>`).join('');
+      const rssi=route.rssi==null?'RSSI —':`${escapeHtml(route.rssi)} dBm`, snr=route.snr==null?'SNR —':`${escapeHtml(route.snr)} dB`;
+      return `<div class="observed-route">${noGpsLines}<code>${chain||'—'}</code><small>${Math.max(0,shown.length-1)} hops · ${rssi} · ${snr}</small><div class="route-observer ${observerHash?'tracked-observer':''}">Observed by ${escapeHtml(route.observerName)}${observerHash?` · ${escapeHtml(observerHash)}`:''}</div>${relations.length?`<div class="route-relations">${relationLabelMarkup(relations)}</div>`:''}</div>`;
+    }).join('')}${trackedRoutes.length&&trackedRoutes.length<routes.length?`<button class="route-toggle" type="button">${showAll?'Show tracked routes':`Show all ${routes.length} routes`}</button>`:''}</section>`);
+  }
+  const total=details?.observation_count??details?.packet?.observation_count??packet.observation_count??1;
+  parts.push(`<p>Total observations: ${escapeHtml(total)}</p>`);
+  if(!details||!routes.length)parts.push(`<p>Signal: ${packet.rssi==null?'—':`${escapeHtml(packet.rssi)} dBm`} · SNR: ${packet.snr==null?'—':`${escapeHtml(packet.snr)} dB`}</p>`);
+  const key=detailKey(packet), hasSource=!!String(decoded.pubKey||'').trim();
+  parts.push(`<div class="detail-key-block"><b class="detail-label">${hasSource?'Source key':'Observer key'}</b><code>${escapeHtml(key||'Not available')}</code></div>`);
+  parts.push(`<p>Reported by: ${escapeHtml(packet.observer_name||'Unknown observer')}</p>`);
+  parts.push(`<p class="detail-mono">Hash: ${escapeHtml(packet.hash||'')}</p>`);
+  parts.push(`<p class="detail-mono detail-raw">Raw: ${escapeHtml(packet.raw_hex||'')}</p>`);
+  return `<div class="packet-detail-backdrop"><section class="packet-detail" role="dialog" aria-modal="true" aria-label="Packet details"><button class="detail-close" aria-label="Close packet details"><span aria-hidden="true">×</span><b>Close</b></button><h2>${escapeHtml(liveIdentityLabel(packet))}</h2>${parts.join('')}<div class="detail-actions"><button class="copy-packet-hash" type="button" ${packet.hash?'':'disabled'}>Copy Hash</button><button class="copy-source-key" type="button" ${key?'':'disabled'}>Copy key</button><button class="detail-close-secondary" type="button">Close</button></div></section></div>`;
 }
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
 // M² polling model: sticky active source, failover only after 30 s of failure,
@@ -970,7 +1018,7 @@ function renderMyLog() {
   screen.querySelector('.route-toggle')?.addEventListener('click',()=>{liveState.showAllRoutes=!liveState.showAllRoutes;renderMyLog();});
   screen.querySelector('.packet-detail-backdrop')?.addEventListener('click',event=>{if(event.target===event.currentTarget)closeDetail();});
   screen.querySelector('.copy-packet-hash')?.addEventListener('click',event=>copyValue(liveState.selected?.hash,event.currentTarget));
-  screen.querySelector('.copy-source-key')?.addEventListener('click',event=>{const decoded=parseDecoded(liveState.details?.packet||liveState.selected||{});copyValue(decoded.pubKey||decoded.publicKey||decoded.srcPubKey||decoded.srcKey,event.currentTarget);});
+  screen.querySelector('.copy-source-key')?.addEventListener('click',event=>{if(liveState.selected)copyValue(detailKey(liveState.selected),event.currentTarget);});
   document.getElementById('clear-my-log')?.addEventListener('click',()=>{myLogPackets=[];saveMyLogPackets();renderMyLog();});
   document.getElementById('export-my-log')?.addEventListener('click',()=>{const content=myLogPackets.map(packet=>`${packetTime(packet)} · ${packetType(packet)} · ${liveIdentityLabel(packet)}\n${packetSummary(packet)}\nHash: ${packet.hash||'—'}\n`).join('\n');const blob=new Blob([content],{type:'text/plain'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`M2_MY_LOG_${new Date().toISOString().replace(/[:.]/g,'-')}.txt`;link.click();URL.revokeObjectURL(url);});
 }

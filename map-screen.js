@@ -380,13 +380,15 @@ function updateMapView() {
 }
 
 // ---------- Lot po najdłuższej trasie (port LaunchedEffect(animationToken) z NetworkMapScreen.kt) ----------
-function mapFlightZoom(km) { return km < 1 ? 18.5 : km < 3 ? 17.5 : km < 5 ? 16.7 : km < 8 ? 15.5 : km < 20 ? 14 : km < 50 ? 12.7 : km < 100 ? 11.4 : 10; }
+// Zoom osmdroid liczony w fizycznych px telefonu (kafelek 256 px fizycznych) — na web ten sam kadr = zoom − log2(2.75).
+const APK_ZOOM = Math.log2(2.75);
+function mapFlightZoom(km) { return (km < 1 ? 18.5 : km < 3 ? 17.5 : km < 5 ? 16.7 : km < 8 ? 15.5 : km < 20 ? 14 : km < 50 ? 12.7 : km < 100 ? 11.4 : 10) - APK_ZOOM; }
 function mapMercY(lat) { const s = Math.sin(lat * Math.PI / 180); return .5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI); }
 function mapFitSegmentZoom(a, b) {
-  const size = mapState.view.getSize();
+  const size = mapState.view.getSize(), px = 1 / APK_PX;
   const fx = Math.max(Math.abs(a.lon - b.lon) / 360, 1e-9), fy = Math.max(Math.abs(mapMercY(a.lat) - mapMercY(b.lat)), 1e-9);
-  const w = Math.max((size.x - 260) / 2, 160), h = Math.max((size.y - 360) / 2, 240);
-  return Math.min(18.5, Math.max(4, Math.min(Math.log2(w / 256 / fx), Math.log2(h / 256 / fy))));
+  const w = Math.max((size.x * px - 260) / 2, 160), h = Math.max((size.y * px - 360) / 2, 240);
+  return Math.min(18.5, Math.max(4, Math.min(Math.log2(w / 256 / fx), Math.log2(h / 256 / fy)))) - APK_ZOOM;
 }
 function mapBearing(a, b) {
   const r = Math.PI / 180, y = Math.sin((b.lon - a.lon) * r) * Math.cos(b.lat * r);
@@ -556,7 +558,7 @@ async function mapFly(route, edges, onFinished) {
     }
     await sleep(800); if (!alive()) return;
     view.options.zoomSnap = 1;
-    view.fitBounds(route.map(p => [p.lat, p.lon]), { padding: [90, 90], animate: true });
+    view.fitBounds(route.map(p => [p.lat, p.lon]), { padding: [90 * APK_PX, 90 * APK_PX], animate: true });
     await sleep(4000); if (!alive()) return;
     await sleep(250); if (!alive()) return;
     onFinished?.();

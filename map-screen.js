@@ -175,11 +175,9 @@ function leaveMap() {
 function mapRender() {
   leaveMap();
   if (!trackedKeys.some(k => k.key.toLowerCase() === mapState.key.toLowerCase())) { mapState.key = trackedKeys[0]?.key || ''; }
-  if (!trackedKeys.length) {
-    screen.innerHTML = `<section class="map-screen"><div class="eyebrow">NETWORK MAP</div><h1>Map</h1><p class="settings-intro">Add a full public key in Settings to track its routes, repeaters and distances.</p></section>`;
-    return;
-  }
-  const keyOptions = trackedKeys.map(k => `<option value="${escapeHtml(k.key)}" ${k.key.toLowerCase() === mapState.key.toLowerCase() ? 'selected' : ''}>${escapeHtml(k.name || 'Unnamed')} · ${escapeHtml(k.key.slice(0, 4).toUpperCase())}</option>`).join('');
+  // M² always shows the map; without saved keys the selector is empty and Start is unavailable.
+  const noKey = !trackedKeys.length;
+  const keyOptions = noKey ? '<option value="">No saved keys</option>' : trackedKeys.map(k => `<option value="${escapeHtml(k.key)}" ${k.key.toLowerCase() === mapState.key.toLowerCase() ? 'selected' : ''}>${escapeHtml(k.name || 'Unnamed')} · ${escapeHtml(k.key.slice(0, 4).toUpperCase())}</option>`).join('');
   const modeOptions = Object.entries(MapCore.MODES).map(([id, label]) => `<option value="${id}" ${id === mapState.mode ? 'selected' : ''}>${label}</option>`).join('');
   const lock = mapState.running ? 'disabled' : '';
   screen.innerHTML = `<section class="map-screen map-full">
@@ -191,12 +189,12 @@ function mapRender() {
       </div>
       <div class="map-panel-body">
         <div class="map-controls">
-          <label>Tracked key<select id="map-key" ${lock}>${keyOptions}</select></label>
+          <label>Tracked key<select id="map-key" ${lock || (noKey ? 'disabled' : '')}>${keyOptions}</select></label>
           <label>Tracking mode<select id="map-mode" ${lock}>${modeOptions}</select></label>
         </div>
         <div class="map-buttons">
-          <button type="button" id="map-toggle" class="${mapState.running ? 'map-stop' : 'map-start'}">${mapState.running ? 'Stop' : 'Start'}</button>
-          <button type="button" id="map-restart">Restart</button>
+          <button type="button" id="map-toggle" class="${mapState.running ? 'map-stop' : 'map-start'}" ${noKey ? 'disabled' : ''}>${mapState.running ? 'Stop' : 'Start'}</button>
+          <button type="button" id="map-restart" ${noKey ? 'disabled' : ''}>Restart</button>
           <button type="button" id="map-export" title="Export map file">Export</button>
           <button type="button" id="map-import" title="Load map file">Load</button>
         </div>
@@ -253,7 +251,8 @@ function updateMapView() {
   document.getElementById('map-longest-km')?.classList.toggle('record-km', mapRecordPending(mapState.key));
   const status = document.getElementById('map-status');
   if (status) {
-    status.textContent = mapState.directoryError ? `Node directory unavailable: ${mapState.directoryError}`
+    status.textContent = !trackedKeys.length ? 'Add a full public key in Settings to track its routes, repeaters and distances.'
+      : mapState.directoryError ? `Node directory unavailable: ${mapState.directoryError}`
       : !mapState.running && !mapState.events.size ? 'Press Start to collect routes for the selected key.'
       : mapState.running ? 'Tracking… routes are added with every Live refresh.' : mapState.committed ? 'Stopped. The longest route of this session was saved.' : '';
   }

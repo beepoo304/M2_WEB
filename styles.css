@@ -409,3 +409,6 @@ body.map-fullscreen .screen { position:relative; width:100%; max-width:none; mar
 .my-log-row .my-log-head small { color:var(--on-surface-variant); font:11px "Roboto Mono",Consolas,monospace; }
 .my-log-row strong { font-size:13px; font-weight:600; }
 .my-log-row .my-log-detail { color:var(--on-surface-variant); font-size:11px; overflow-wrap:anywhere; }
+/* Narrow phones: keep the top bar on one line (M² logo + status only). */
+@media (max-width:600px) { .brand-name span, .brand-caption { display:none; } .brand-lockup { gap:10px; min-width:0; } }
+@media (max-width:640px) { .map-panel-head { margin-bottom:6px; } .map-controls, .map-buttons, .map-counters { gap:6px; } .map-buttons button { min-height:38px; } .map-counters>div { padding:6px 8px; } .longest-tile { padding:8px 12px; } }

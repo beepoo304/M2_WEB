@@ -12,8 +12,9 @@ if (!is_array($event)) { http_response_code(400); exit; }
 
 $db = m2_stats_db();
 if ($db) {
-    $recent = $db->prepare('SELECT COUNT(*) FROM m2_events WHERE vid = ? AND ts > ?');
-    $recent->execute([m2_visitor_id(), time() - 60]);
+    $recent = $db->prepare('SELECT COUNT(*) FROM m2_events WHERE vid = ? AND ts > ? AND kind <> ?');
+    // Zapytania Live przez api.php nie wliczają się do limitu — wcześniej zjadały go i klucze dostawały 429.
+    $recent->execute([m2_visitor_id(), time() - 60, 'api']);
     if ((int) $recent->fetchColumn() > 120) { http_response_code(429); exit; }
 }
 

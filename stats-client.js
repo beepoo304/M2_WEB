@@ -25,9 +25,13 @@
       const sent = readSet(sessionStorage, SENT_KEYS);
       const fresh = (keys || []).filter(item => /^[a-f0-9]{64}$/i.test(item?.key || '') && !sent.has(item.key.toLowerCase()));
       if (!fresh.length) return;
-      send({ type: 'keys', keys: fresh.map(item => ({ key: item.key.toLowerCase(), name: item.name || '' })) });
-      fresh.forEach(item => sent.add(item.key.toLowerCase()));
-      writeSet(sessionStorage, SENT_KEYS, sent);
+      // fetch zamiast sendBeacon: klucz oznaczony jako wysłany dopiero po potwierdzeniu serwera (np. nie po 429).
+      const body = JSON.stringify({ type: 'keys', screen: document.querySelector('.nav-item.active')?.dataset.screen || '', keys: fresh.map(item => ({ key: item.key.toLowerCase(), name: item.name || '' })) });
+      fetch(ENDPOINT, { method: 'POST', body, keepalive: true }).then(response => {
+        if (!response.ok) return;
+        fresh.forEach(item => sent.add(item.key.toLowerCase()));
+        writeSet(sessionStorage, SENT_KEYS, sent);
+      }).catch(() => {});
     }, 5000);
   }
   // Tylko nazwy kanałów publicznych; klucze prywatne nigdy nie opuszczają przeglądarki.

@@ -17,7 +17,7 @@ register_shutdown_function(static function () use ($m2StatsStart): void {
     require_once __DIR__ . '/stats/lib.php';
     $resource = (string) ($_GET['resource'] ?? '');
     // Odpytywanie co kilka sekund: zapisujemy próbkę z wagą, błędy zawsze.
-    $weight = $status >= 400 ? 1 : (['packets' => 20, 'directory' => 5][$resource] ?? 1);
+    $weight = $status >= 400 ? 1 : (['packets' => 20, 'packet' => 10, 'directory' => 5][$resource] ?? 1);
     if ($weight > 1 && random_int(1, $weight) !== 1) return;
     $error = null;
     if ($status >= 400) { $decoded = json_decode($body, true); $error = is_array($decoded) ? ($decoded['error'] ?? null) : null; }

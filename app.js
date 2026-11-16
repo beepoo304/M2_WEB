@@ -851,11 +851,12 @@ async function loadPackets(manual = false) {
     activeApiSource=result.source;
     updateActiveApiLabel();
     liveState.packets = mergeFeedPackets(result.packets);
+    // M² (CoreScopeRepository.parsePacket) deszyfruje zapisane kanały przed liczeniem relacji, My log i statystyk.
+    await channelsDecryptLive(liveState.packets);
     recordTrackedPacketCounters(liveState.packets);
     updateMyLog(liveState.packets);
     appStatsAccept(liveState.packets);
     appStatsSwitchBroker();
-    await channelsDecryptLive(liveState.packets);
     mapIngest();
     channelStatsRefresh();
     liveState.error = ''; liveState.lastSuccess = Date.now(); pollFailures = 0;

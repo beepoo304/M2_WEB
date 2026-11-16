@@ -583,3 +583,4 @@ body.map-fs-on #map-canvas .leaflet-bottom { bottom:0; }
 .guide-lang select { appearance:none; -webkit-appearance:none; border:1px solid var(--outline); border-radius:999px; background:transparent; color:var(--primary); padding:9px 22px; font:500 14px "Segoe UI",system-ui,sans-serif; text-align:center; cursor:pointer; }
 .guide-lang select option { background:var(--surface); color:var(--on-surface); }
 .guide-section { border:.5px solid #80808080; border-radius:8px; padding:10px; }
+.guide-privacy { margin:4px 2px 0; color:var(--on-surface-variant); font-size:11px; line-height:1.5; }

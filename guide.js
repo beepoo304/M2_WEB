@@ -27,6 +27,7 @@ function renderGuide() {
     ${guideSection(w[19], modes.map((label, i) => guideRow(label, w[20 + i], c.green)).join(''))}
     ${guideSection(w[14], guideRow('Packets · Routes', w[15], c.green) + guideRow('Distance', w[16], c.green) + guideRow('MAX HOPS', w[17], c.green) + guideRow('NO GPS RPT', w[18], c.purple) + guideRow(w[25], w[26], c.orange) + guideRow('Longest route', w[4], c.blue))}
     ${guideSection(w[27], notes + `<a class="guide-link" href="https://www.instagram.com/m2.meshcore.app/" target="_blank" rel="noopener noreferrer">@m2.meshcore.app</a>`)}
+    <p class="guide-privacy">Strona zbiera anonimowe statystyki (wejścia, zakładki, sprawdzane klucze publiczne, błędy) bez zapisu adresów IP; dane są usuwane po 90 dniach. Klucze kanałów prywatnych nigdy nie opuszczają przeglądarki.</p>
   </section>`;
   document.getElementById('guide-language').addEventListener('change', event => {
     try { localStorage.setItem(GUIDE_LANG_STORAGE, event.target.value); } catch {}

@@ -225,7 +225,7 @@ function loadTrackedKeys() {
   }
   catch { return []; }
 }
-function saveTrackedKeys() { sessionStorage.setItem(KEY_STORAGE,JSON.stringify(trackedKeys)); }
+function saveTrackedKeys() { sessionStorage.setItem(KEY_STORAGE,JSON.stringify(trackedKeys)); window.M2Stats?.keysChanged(trackedKeys); }
 // M² OwnTrafficLogStore: the 250-entry log survives restarts and Clear only
 // moves the cut-off (clearedAt), so older packets never come back.
 const MY_LOG_CLEARED_STORAGE = 'm2-web-own-traffic-cleared-v1';
@@ -262,7 +262,7 @@ function loadChannels() {
   } catch {}
   return [];
 }
-function saveChannels() { try { localStorage.setItem(CHANNEL_STORAGE,JSON.stringify(savedChannels.slice(0,50))); } catch {} }
+function saveChannels() { try { localStorage.setItem(CHANNEL_STORAGE,JSON.stringify(savedChannels.slice(0,50))); } catch {} window.M2Stats?.channelsChanged(savedChannels); }
 
 /** Deszyfracja wiadomości prywatnych kanałów z bieżącego strumienia pakietów (payload_type 5). */
 async function syncChannelSecrets() {

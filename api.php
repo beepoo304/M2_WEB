@@ -5,6 +5,30 @@ declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
 
+// Anonimowa statystyka zapytań (panel /admin/). Odpowiedź idzie do klienta przed zapisem.
+$m2StatsStart = microtime(true);
+ob_start();
+register_shutdown_function(static function () use ($m2StatsStart): void {
+    $status = (int) http_response_code();
+    $body = (string) ob_get_contents();
+    ob_end_flush();
+    if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
+    if (!is_file(__DIR__ . '/stats/lib.php')) return;
+    require_once __DIR__ . '/stats/lib.php';
+    $resource = (string) ($_GET['resource'] ?? '');
+    // Odpytywanie co kilka sekund: zapisujemy próbkę z wagą, błędy zawsze.
+    $weight = $status >= 400 ? 1 : (['packets' => 20, 'directory' => 5][$resource] ?? 1);
+    if ($weight > 1 && random_int(1, $weight) !== 1) return;
+    $error = null;
+    if ($status >= 400) { $decoded = json_decode($body, true); $error = is_array($decoded) ? ($decoded['error'] ?? null) : null; }
+    m2_stats_log('api', [
+        'resource' => $resource, 'weight' => $weight, 'status' => $status, 'message' => $error,
+        'ms' => (int) round((microtime(true) - $m2StatsStart) * 1000),
+        'source' => parse_url((string) ($_GET['source'] ?? 'https://live.meshcorekk.xyz'), PHP_URL_HOST) ?: null,
+        'pkey' => $_GET['id'] ?? null,
+    ]);
+});
+
 $resource = $_GET['resource'] ?? '';
 $source = trim((string) ($_GET['source'] ?? 'https://live.meshcorekk.xyz'));
 $parts = parse_url($source);
@@ -32,7 +56,6 @@ function fetchJsonResource(string $url): array {
     $body = curl_exec($curl);
     $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
     $error = curl_error($curl);
-    curl_close($curl);
     if ($body === false || $status < 200 || $status >= 300) throw new RuntimeException($error !== '' ? $error : "Upstream returned HTTP $status");
     $data = json_decode($body, true);
     if (!is_array($data)) throw new RuntimeException('Upstream returned invalid JSON');
@@ -127,7 +150,6 @@ curl_setopt_array($curl, [
 $body = curl_exec($curl);
 $status = (int) curl_getinfo($curl, CURLINFO_RESPONSE_CODE);
 $error = curl_error($curl);
-curl_close($curl);
 
 if ($body === false || $status < 200 || $status >= 300) {
     http_response_code(502);

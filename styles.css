@@ -438,3 +438,51 @@ body.map-fullscreen .screen { position:relative; width:100%; max-width:none; mar
 .row-match b.reply { color:#f0a84b; }
 .row-match b.no-route { color:#ff0000; white-space:pre; }
 @media (max-width:600px) { body.live-active .screen { padding:0 0 calc(80px + env(safe-area-inset-bottom)); } .live-log-head, .live-screen .packet-list { border-radius:0; border-left:0; border-right:0; } .live-log-head { border-top:0; } }
+
+/* ===== SETTINGS 1:1 z M² SettingsScreen.kt ===== */
+.m2-settings { max-width:720px; padding:0 16px 24px; }
+.m2-settings h1 { margin:16px 0 12px; font-size:22px; font-weight:700; letter-spacing:0; }
+.settings-row { display:flex; align-items:center; justify-content:space-between; }
+.settings-title { display:block; color:var(--primary); font-weight:700; font-size:14px; }
+.settings-muted { margin:2px 0; color:var(--on-surface-variant); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.text-button { border:0; background:none; color:var(--primary); padding:8px 12px; border-radius:20px; font:600 14px "Segoe UI",system-ui,sans-serif; cursor:pointer; }
+.text-button:hover { background:#67d78a14; }
+.settings-api-box { position:relative; margin:8px 0 4px; }
+.settings-field { position:relative; display:flex; align-items:center; width:100%; min-height:56px; padding:0 14px; border:1px solid var(--outline); border-radius:4px; background:transparent; color:var(--on-surface); text-align:left; cursor:pointer; margin-top:8px; }
+.settings-field:focus-within,.settings-field[aria-expanded="true"] { border-color:var(--primary); border-width:2px; padding:0 13px; }
+.settings-field.invalid { border-color:var(--error); }
+.settings-field-label { position:absolute; top:-8px; left:10px; padding:0 4px; background:var(--background,#111314); color:var(--on-surface-variant); font-size:11px; }
+.settings-field[aria-expanded="true"] .settings-field-label,.settings-field:focus-within .settings-field-label { color:var(--primary); }
+.settings-field.invalid .settings-field-label { color:var(--error); }
+.settings-field-value { flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:12px; }
+.settings-field-arrow { color:var(--on-surface-variant); font-size:10px; }
+.settings-input { cursor:text; }
+.settings-input input { flex:1; min-width:0; border:0; outline:0; background:transparent; color:var(--on-surface); font:12px "Segoe UI",system-ui,sans-serif; }
+.settings-api-menu { position:absolute; z-index:5; top:calc(100% + 4px); left:0; right:0; padding:8px 0; border-radius:4px; background:var(--surface-variant); box-shadow:0 8px 24px #000a; }
+.settings-api-option { display:flex; align-items:center; }
+.settings-api-option button:first-child,.settings-api-add { flex:1; min-width:0; border:0; background:none; padding:14px 16px; color:var(--on-surface); text-align:left; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:12px; cursor:pointer; }
+.settings-api-option button:first-child:hover,.settings-api-add:hover { background:#ffffff0d; }
+.settings-api-menu hr { margin:4px 0; border:0; border-top:1px solid var(--outline); }
+.settings-api-add { width:100%; color:var(--primary); font-size:14px; }
+.icon-delete { flex:none; width:48px; height:48px; border:0; border-radius:50%; background:none; color:var(--on-surface-variant); display:grid; place-items:center; cursor:pointer; }
+.icon-delete:hover:not(:disabled) { background:#ffffff0d; }
+.icon-delete:disabled { opacity:.38; cursor:default; }
+.settings-button { display:inline-block; margin:8px 0; border:0; border-radius:20px; padding:10px 24px; background:var(--primary); color:#00391c; font:600 14px "Segoe UI",system-ui,sans-serif; cursor:pointer; }
+.settings-divider { margin:12px 0; border:0; border-top:1px solid var(--outline); }
+.settings-divider.flush { margin-bottom:0; }
+.settings-devices { display:flex; flex-direction:column; }
+.settings-device { display:flex; align-items:center; padding:5px 0; border-bottom:1px solid var(--outline); }
+.settings-device-info { flex:1; min-width:0; display:flex; flex-direction:column; cursor:pointer; }
+.settings-device-info b { font-weight:500; font-size:15px; }
+.settings-device-info code { color:var(--on-surface-variant); font:11px "Roboto Mono",Consolas,monospace; }
+.settings-device-info small { color:var(--primary); font-size:11px; }
+.settings-kofi { display:flex; flex-direction:column; padding:18px 0; text-decoration:none; }
+.settings-kofi b { color:var(--primary); font-weight:500; }
+.settings-kofi span { color:var(--on-surface-variant); font-size:12px; }
+.settings-version { margin-top:16px; }
+.settings-gh { margin-top:6px; }
+.settings-gh-link { display:block; padding:2px 0; color:var(--primary); font-size:12px; text-decoration:none; }
+.settings-close-app { width:100%; margin-top:16px; border:0; border-radius:20px; padding:10px 24px; background:var(--error); color:#fff; font:600 14px "Segoe UI",system-ui,sans-serif; cursor:pointer; }
+.settings-close-app:disabled { opacity:.6; }
+.settings-close-note { margin:8px 0 24px; }
+.dialog-field input.invalid { border-color:var(--error); }

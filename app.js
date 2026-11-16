@@ -13,6 +13,7 @@ const MY_LOG_STORAGE = 'm2-web-own-traffic-log-v1';
 const CHANNEL_STORAGE = 'm2-web-channels-v1';
 const ACTIVE_TAB_STORAGE = 'm2-web-active-tab-v1';
 const API_STORAGE = 'm2-web-api-sources-v1';
+const ACTIVE_API_STORAGE = 'm2-web-active-api-v1';
 // TrafficRefreshPolicy: 3 s in the foreground (also while tracking), 30 s in the background.
 const refreshIntervalMs = 3_000;
 let nextRefreshAt = Date.now() + refreshIntervalMs;
@@ -20,7 +21,7 @@ let trackedKeys = loadTrackedKeys();
 let myLogPackets = loadMyLogPackets();
 let savedChannels = loadChannels();
 let apiSources = loadApiSources();
-let activeApiSource = apiSources[0];
+let activeApiSource = loadActiveApiSource();
 const nodeInfoCache = new Map();
 const labels = {0:'REQUEST',1:'RESPONSE',2:'DIRECT MSG',3:'ACK',4:'ADVERT',5:'CHANNEL MSG',6:'GROUP DATA',7:'ANON REQ',8:'PATH',9:'TRACE',10:'MULTIPART',11:'CONTROL',15:'RAW CUSTOM'};
 const trackedRelations = { source:'SOURCE', end:'LAST RECORDED HOP', route:'IN ROUTE', observer:'REPORTED BY', reply:'REPLY TO' };
@@ -451,16 +452,6 @@ function recordTrackedPacketCounters(packets) {
   if(changed)saveTrackedKeys();
   return changed;
 }
-// Kept for the Settings template; the value now comes from the session counter,
-// not from the currently loaded 250-packet window.
-function packetCountForTrackedKey(key) {
-  return trackedKeys.find(item=>item.key.toLowerCase()===String(key||'').toLowerCase())?.packetCount || 0;
-}
-function formatCounterStart(value) {
-  const time=Number(value);
-  if(!Number.isFinite(time)||time<=0)return '—';
-  return new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Warsaw',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}).format(time);
-}
 function normalizeApiSource(value) {
   try { const url=new URL(/^https?:\/\//i.test(value.trim())?value.trim():`https://${value.trim()}`); if(url.protocol!=='https:'||!url.hostname.includes('.'))return null;url.hash='';url.search='';return url.toString().replace(/\/$/,''); } catch { return null; }
 }
@@ -477,7 +468,12 @@ function loadApiSources() {
   } catch {}
   return ['https://mc.inside.net.pl', 'https://live.meshcorekk.xyz', 'https://analyzer.marwoj.net'];
 }
-function saveApiSources() { sessionStorage.setItem(API_STORAGE,JSON.stringify(apiSources)); }
+function saveApiSources() { sessionStorage.setItem(API_STORAGE,JSON.stringify(apiSources)); sessionStorage.setItem(ACTIVE_API_STORAGE,activeApiSource||apiSources[0]); }
+function loadActiveApiSource() {
+  const saved=normalizeApiSource(sessionStorage.getItem(ACTIVE_API_STORAGE)||'');
+  if(saved&&!apiSources.includes(saved))apiSources.push(saved);
+  return saved||apiSources[0];
+}
 function sourceLabel(source) { try{return new URL(source).host;}catch{return source;} }
 function apiProxyUrl(resource, params={}, source=activeApiSource) {
   const query=new URLSearchParams({resource,...params,source});
@@ -753,15 +749,12 @@ function renderDetail(packet) {
   return `<div class="packet-detail-backdrop"><section class="packet-detail" role="dialog" aria-modal="true" aria-label="Packet details"><button class="detail-close" aria-label="Close packet details"><span aria-hidden="true">×</span><b>Close</b></button><h2>${escapeHtml(liveIdentityLabel(packet))}</h2>${parts.join('')}<div class="detail-actions"><button class="copy-packet-hash" type="button" ${packet.hash?'':'disabled'}>Copy Hash</button><button class="copy-source-key" type="button" ${key?'':'disabled'}>Copy key</button><button class="detail-close-secondary" type="button">Close</button></div></section></div>`;
 }
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
-// M² polling model: sticky active source, failover only after 30 s of failure,
-// a failed alternative cools down for 180 s, retries back off 6 s → 30 s and a
-// hidden tab keeps polling slowly (30 s) instead of stopping.
+// M² polling model: one active Live API chosen in Settings (no automatic
+// failover), retries back off 6 s → 30 s and a hidden tab keeps polling
+// slowly (30 s) instead of stopping.
 const FETCH_TIMEOUT_MS = 15_000;
-const FAILOVER_AFTER_MS = 30_000;
-const SOURCE_COOLDOWN_MS = 180_000;
 const HIDDEN_REFRESH_MS = 30_000;
 const UPDATING_GRACE_MS = 6_000;
-const sourceFailures = new Map();
 let pollFailures = 0, loadingStartedAt = 0, enrichRunning = false;
 async function fetchJson(url, timeoutMs=FETCH_TIMEOUT_MS) {
   const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),timeoutMs);
@@ -773,16 +766,9 @@ async function fetchJson(url, timeoutMs=FETCH_TIMEOUT_MS) {
   finally { clearTimeout(timer); }
 }
 function currentRefreshInterval() { return document.hidden ? Math.max(refreshIntervalMs,HIDDEN_REFRESH_MS) : refreshIntervalMs; }
-function pollSourceOrder(now=Date.now()) {
+function pollSourceOrder() {
   if(!apiSources.includes(activeApiSource))activeApiSource=apiSources[0];
-  const failing=sourceFailures.get(activeApiSource);
-  if(!failing||now-failing.since<FAILOVER_AFTER_MS)return [activeApiSource];
-  return [activeApiSource,...apiSources.filter(source=>source!==activeApiSource&&!((sourceFailures.get(source)?.cooldownUntil||0)>now))];
-}
-function noteSourceFailure(source, now=Date.now()) {
-  const entry=sourceFailures.get(source)||{since:now,cooldownUntil:0};
-  if(source!==activeApiSource)entry.cooldownUntil=now+SOURCE_COOLDOWN_MS;
-  sourceFailures.set(source,entry);
+  return [activeApiSource];
 }
 // Stable identity like M²: one entry per id, newest API order preserved, and
 // an unchanged packet keeps its object so cached parsing/decryption survive.
@@ -858,11 +844,10 @@ async function loadPackets(manual = false) {
         const data=await fetchJson(apiProxyUrl('packets',{limit:'250',_:String(Date.now())},source));
         if(!Array.isArray(data.packets))throw new Error('Invalid packet-feed response');
         recordApiHealth(source,true,startedAt);
-        sourceFailures.delete(source);
         result={source,packets:data.packets};break;
-      } catch(error) { lastError=error; recordApiHealth(source,false,startedAt); noteSourceFailure(source); }
+      } catch(error) { lastError=error; recordApiHealth(source,false,startedAt); }
     }
-    if(!result)throw new Error(`${apiSources.length>1?'All configured APIs are unavailable':'API unavailable'}${lastError?.message?`: ${lastError.message}`:''}`);
+    if(!result)throw new Error(`API unavailable${lastError?.message?`: ${lastError.message}`:''}`);
     activeApiSource=result.source;
     updateActiveApiLabel();
     liveState.packets = mergeFeedPackets(result.packets);
@@ -971,42 +956,94 @@ function renderApiLogDialog() {
   const rows=entries.map(entry=>`<div class="api-log-row"><b class="api-log-down">API DOWN  ${escapeHtml(apiLogTime(entry.start))}</b><span class="${entry.ongoing?'api-log-down':'api-log-restored'}">${entry.ongoing?'Still down':`API RESTORED  ${escapeHtml(apiLogTime(entry.last))}`}</span><span class="api-log-duration">Duration: ${apiDuration(entry.last-entry.start)}</span><small>${escapeHtml(entry.status)}</small></div>`).join('');
   return `<div class="dialog-backdrop" id="api-log-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-label="Live API log"><h3>LIVE API LOG</h3><p class="api-log-base">${escapeHtml(activeApiSource)}</p><p class="api-log-status ${status[0]}">${status[1]}</p><p class="api-log-note">Checked every 60 seconds · every 15 seconds during an outage</p><div class="api-log-list">${rows||'<div class="empty-feed">No API outages recorded</div>'}</div><div class="dialog-actions"><button type="button" class="danger-link" id="api-log-reset">RESET LOG</button><button type="button" class="dialog-cancel" id="api-log-close">Close</button></div></section></div>`;
 }
+// Settings 1:1 with M² SettingsScreen.kt: one active Live API picked from the
+// saved list, tracked device keys with counters, export location, about.
+const settingsUi={ apiMenu:false, addApi:false, newApi:'', apiError:false, url:'', showKey:false, keyError:false, key:'' };
+const TRASH_ICON='<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M16 9v10H8V9h8m-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1zM18 7H6v12c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7z"/></svg>';
+const PROTECTED_APIS=['https://mc.inside.net.pl','https://live.meshcorekk.xyz'];
+function deviceCounterStart(value) {
+  const date=new Date(Number(value)||0), pad=n=>String(n).padStart(2,'0');
+  return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 function renderSettings() {
-  screen.innerHTML = `<section class="settings-screen"><div class="eyebrow">PERSONALIZE M²</div><h1>Settings</h1><section class="api-settings"><div class="settings-heading"><h2>Packet APIs</h2><button type="button" id="open-api-log">Log</button></div><p class="settings-intro">The app tries these APIs in order. If the first one is unavailable, it switches automatically to the next working source.</p><div class="api-source-list">${apiSources.map((source,index)=>`<div class="api-source-row"><span class="api-order">${index+1}</span><code>${escapeHtml(source)}</code>${source===activeApiSource?'<b class="api-active-badge">ACTIVE</b>':''}<button type="button" data-primary-api="${index}" ${index===0?'disabled':''}>Make primary</button>${apiSources.length>1?`<button type="button" data-remove-api="${index}" aria-label="Remove API ${escapeHtml(source)}">Remove</button>`:''}</div>`).join('')}</div><div class="api-add-form"><label for="api-source-input">Add API base URL</label><div><input id="api-source-input" type="url" autocomplete="url" placeholder="https://api.example.org"><button id="add-api-source" type="button">Add API</button></div><p id="api-source-error" class="form-error" role="status" aria-live="polite"></p></div></section><section class="tracked-settings"><h2>Tracked keys</h2><p class="settings-intro">Add a full public key to recognize it in packet sources, observers and recorded routes.</p><div class="key-form"><label>Public key · 64 hex characters<input id="tracked-key" autocomplete="off" spellcheck="false" placeholder="Paste the full public key" maxlength="64"></label><button class="add-key-button" id="add-tracked-key" type="button">Add key</button><div id="key-form-error" class="form-error" role="status" aria-live="polite"></div></div><div class="key-storage-note"><span>SESSION ONLY</span> Keys and names are kept only for this browser session. Packet counts below use the loaded feed (${liveState.packets.length} of 250 packets).</div><div class="tracked-key-list"><div class="keys-heading"><strong>Saved keys</strong><span>${trackedKeys.length}</span></div>${trackedKeys.length?trackedKeys.map((item,index)=>`<div class="tracked-key-row"><div><strong>${escapeHtml(item.name||'Name unavailable')}</strong><code>${escapeHtml(item.key)}</code><small class="tracked-packet-count">${packetCountForTrackedKey(item.key)} matching packets in loaded feed</small></div><button type="button" data-remove-key="${index}" aria-label="Remove ${escapeHtml(item.name||'key')}">Remove</button></div>`).join(''):'<div class="empty-keys">No tracked keys yet.</div>'}</div></section><section class="about-settings"><h2>About M²</h2><p class="settings-intro">Exports (my log, maps) are saved to your browser's download folder. Channel keys never leave this browser.</p><a class="settings-link" href="https://ko-fi.com/beepoo304" target="_blank" rel="noopener noreferrer">Support M² on Ko-fi — ko-fi.com/beepoo304</a><a class="settings-link" href="https://github.com/beepoo304/M2_WEB" target="_blank" rel="noopener noreferrer">Open source on GitHub — github.com/beepoo304/M2_WEB</a><p class="version-note">M² Web version 0.3.0</p><button type="button" id="close-application" class="danger-button">Close application</button><p class="settings-intro">Stops background listening and closes M².</p></section></section>${settingsApiLogOpen?renderApiLogDialog():''}`;
-  screen.querySelector('.key-storage-note').lastChild.textContent=' Keys, start dates and packet counters are kept only for this browser session.';
-  screen.querySelectorAll('.tracked-packet-count').forEach((element,index)=>{
-    const item=trackedKeys[index];
-    element.textContent=`START ${formatCounterStart(item.counterStartedAt)} · PACKETS ${Number(item.packetCount||0).toLocaleString('en-US')}`;
-  });
-  screen.querySelectorAll('.tracked-key-row>div').forEach((element,index)=>{
-    element.tabIndex=0;element.setAttribute('role','button');element.setAttribute('aria-label',`Open RPT information for ${trackedKeys[index].name||trackedKeys[index].key}`);
-    element.addEventListener('click',()=>openNodeInfo(trackedKeys[index]));
-    element.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openNodeInfo(trackedKeys[index]);}});
-  });
-  document.getElementById('add-api-source').addEventListener('click',()=>{const input=document.getElementById('api-source-input'),error=document.getElementById('api-source-error'),source=normalizeApiSource(input.value);if(!source){error.textContent='Enter a valid HTTPS API base URL.';return;}if(apiSources.includes(source)){error.textContent='This API is already in the list.';return;}apiSources.push(source);saveApiSources();renderSettings();loadPackets(true);});
-  screen.querySelectorAll('[data-primary-api]').forEach(button=>button.addEventListener('click',()=>{const index=Number(button.dataset.primaryApi);apiSources=[apiSources[index],...apiSources.filter((_,i)=>i!==index)];saveApiSources();activeApiSource=apiSources[0];updateActiveApiLabel();renderSettings();loadPackets(true);}));
-  screen.querySelectorAll('[data-remove-api]').forEach(button=>button.addEventListener('click',()=>{apiSources.splice(Number(button.dataset.removeApi),1);saveApiSources();if(!apiSources.includes(activeApiSource)){activeApiSource=apiSources[0];updateActiveApiLabel();}renderSettings();loadPackets(true);}));
-  const keyInput=document.getElementById('tracked-key'), error=document.getElementById('key-form-error'), addButton=document.getElementById('add-tracked-key');
+  if(!settingsUi.url)settingsUi.url=activeApiSource;
+  const menu=settingsUi.apiMenu?`<div class="settings-api-menu" role="listbox">${apiSources.map((address,index)=>{const locked=address===activeApiSource||PROTECTED_APIS.includes(address);return `<div class="settings-api-option"><button type="button" data-pick-api="${index}">${escapeHtml(address)}</button><button type="button" class="icon-delete" data-remove-api="${index}" ${locked?'disabled':''} aria-label="${locked?'Protected API':'Delete API'}" title="${locked?'Protected API':'Delete API'}">${TRASH_ICON}</button></div>`;}).join('')}<hr><button type="button" class="settings-api-add" id="settings-api-add">Add API…</button></div>`:'';
+  const devices=trackedKeys.map((item,index)=>`<div class="settings-device"><div class="settings-device-info" data-device-info="${index}" role="button" tabindex="0" aria-label="Open RPT information for ${escapeHtml(item.name||item.key)}"><b>${escapeHtml(item.name||'Looking up name…')}</b><code>${escapeHtml(item.key.slice(0,8).toLowerCase())}…${escapeHtml(item.key.slice(-6).toLowerCase())}</code><small>START ${deviceCounterStart(item.counterStartedAt)}</small><small>PACKETS ${Number(item.packetCount||0).toLocaleString('pl-PL').replace(/ /g,' ')}</small></div><button type="button" class="icon-delete" data-remove-key="${index}" aria-label="Remove device" title="Remove device">${TRASH_ICON}</button></div>`).join('');
+  const addDialog=settingsUi.addApi?`<div class="dialog-backdrop" id="add-api-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-label="Add LIVE API"><h3>Add LIVE API</h3><label class="dialog-field"><span>API address</span><input id="add-api-input" type="url" autocomplete="url" spellcheck="false" value="${escapeHtml(settingsUi.newApi)}" class="${settingsUi.apiError?'invalid':''}"></label><div class="dialog-actions"><button type="button" class="dialog-cancel" id="add-api-cancel">Cancel</button><button type="button" class="dialog-confirm" id="add-api-confirm">Add</button></div></section></div>`:'';
+  screen.innerHTML=`<section class="settings-screen m2-settings"><h1>SETTINGS</h1>
+    <div class="settings-row"><b class="settings-title">LIVE API</b><button type="button" class="text-button" id="open-api-log">Log</button></div>
+    <p class="settings-muted">Active: ${escapeHtml(activeApiSource)}</p>
+    <div class="settings-api-box"><button type="button" class="settings-field" id="settings-api-field" aria-expanded="${settingsUi.apiMenu}"><span class="settings-field-label">Saved API</span><span class="settings-field-value">${escapeHtml(settingsUi.url)}</span><span class="settings-field-arrow" aria-hidden="true">${settingsUi.apiMenu?'▲':'▼'}</span></button>${menu}</div>
+    <p class="settings-muted">M2 reads the public Live API. MQTT credentials are not required.</p>
+    <button type="button" class="settings-button" id="save-connection">Save connection</button>
+    <hr class="settings-divider">
+    <b class="settings-title">TRACKED DEVICE KEYS</b>
+    <label class="settings-field settings-input ${settingsUi.keyError?'invalid':''}"><span class="settings-field-label">64-character public key</span><input id="tracked-key" type="${settingsUi.showKey?'text':'password'}" autocomplete="off" spellcheck="false" value="${escapeHtml(settingsUi.key)}"><button type="button" class="text-button" id="toggle-key">${settingsUi.showKey?'Hide':'Show'}</button></label>
+    <button type="button" class="settings-button" id="add-tracked-key">Add device</button>
+    <div class="settings-devices">${devices}</div>
+    <hr class="settings-divider">
+    <b class="settings-title">EXPORT LOCATION</b>
+    <p class="settings-muted">DEFAULT: Downloads (browser)</p>
+    <hr class="settings-divider">
+    <a class="settings-kofi" href="https://ko-fi.com/beepoo304" target="_blank" rel="noopener noreferrer"><b>Support M2 on Ko-fi</b><span>ko-fi.com/beepoo304</span></a>
+    <hr class="settings-divider flush">
+    <p class="settings-muted settings-version">M² version 0.1.14 (72)</p>
+    <p class="settings-muted settings-gh">Open source on GitHub</p>
+    <a class="settings-gh-link" href="https://github.com/beepoo304/M2" target="_blank" rel="noopener noreferrer">github.com/beepoo304/M2</a>
+    <button type="button" id="close-application" class="settings-close-app">Close application</button>
+    <p class="settings-muted settings-close-note">Stops background listening and closes M2.</p>
+  </section>${settingsApiLogOpen?renderApiLogDialog():''}${addDialog}`;
+  const rerender=()=>renderSettings();
+  document.getElementById('settings-api-field').addEventListener('click',()=>{settingsUi.apiMenu=!settingsUi.apiMenu;rerender();});
+  screen.querySelectorAll('[data-pick-api]').forEach(button=>button.addEventListener('click',()=>{settingsUi.url=apiSources[Number(button.dataset.pickApi)];settingsUi.apiMenu=false;rerender();}));
+  screen.querySelectorAll('[data-remove-api]').forEach(button=>button.addEventListener('click',()=>{const address=apiSources[Number(button.dataset.removeApi)];if(address===activeApiSource||PROTECTED_APIS.includes(address))return;apiSources=apiSources.filter(item=>item!==address);saveApiSources();if(settingsUi.url===address)settingsUi.url=activeApiSource;rerender();}));
+  document.getElementById('settings-api-add')?.addEventListener('click',()=>{settingsUi.apiMenu=false;settingsUi.addApi=true;rerender();document.getElementById('add-api-input')?.focus();});
+  document.getElementById('add-api-cancel')?.addEventListener('click',()=>{settingsUi.addApi=false;rerender();});
+  document.getElementById('add-api-backdrop')?.addEventListener('click',event=>{if(event.target===event.currentTarget){settingsUi.addApi=false;rerender();}});
+  document.getElementById('add-api-input')?.addEventListener('input',event=>{settingsUi.newApi=event.target.value;if(settingsUi.apiError){settingsUi.apiError=false;event.target.classList.remove('invalid');}});
+  document.getElementById('add-api-confirm')?.addEventListener('click',()=>{const source=normalizeApiSource(settingsUi.newApi);if(!source){settingsUi.apiError=true;rerender();return;}if(!apiSources.includes(source))apiSources.push(source);saveApiSources();settingsUi.url=source;settingsUi.newApi='';settingsUi.addApi=false;rerender();});
+  document.getElementById('save-connection').addEventListener('click',()=>{const source=settingsUi.url.trim();if(!source||source===activeApiSource)return;activeApiSource=source;saveApiSources();liveState.packets=[];liveState.error='';rerender();loadPackets(true);});
+  const keyInput=document.getElementById('tracked-key'), addButton=document.getElementById('add-tracked-key');
+  keyInput.addEventListener('input',()=>{settingsUi.key=keyInput.value;if(settingsUi.keyError){settingsUi.keyError=false;keyInput.parentElement.classList.remove('invalid');}});
+  document.getElementById('toggle-key').addEventListener('click',()=>{settingsUi.showKey=!settingsUi.showKey;rerender();});
   addButton.addEventListener('click',async()=>{
-    const key=keyInput.value.trim().replace(/\s+/g,'').toUpperCase();
-    if(!/^[A-F0-9]{64}$/.test(key)){error.textContent='Enter a complete 64-character hexadecimal public key.';return;}
-    if(trackedKeys.some(item=>item.key.toLowerCase()===key.toLowerCase())){error.textContent='This public key is already saved.';return;}
-    addButton.disabled=true;addButton.textContent='Importing name…';error.textContent='Looking up this key in the MeshCore node directory…';
-    try {
-      const response=await fetch(apiProxyUrl('node',{id:key}),{cache:'no-store'});
-      const result=await response.json();
-      if(!response.ok)throw new Error(response.status===404?'No exact public-key match was found in the MeshCore API. Check the key and try again.':(result.error||`API returned HTTP ${response.status}`));
-      if(String(result.key||'').toLowerCase()!==key.toLowerCase()||!String(result.name||'').trim())throw new Error('The API did not return a name for this exact public key.');
-      trackedKeys.push({key,name:String(result.name).trim(),counterStartedAt:Date.now(),packetCount:0,seenPacketIds:[]});saveTrackedKeys();renderSettings();
-    } catch(cause) { error.textContent=`Name import failed: ${cause.message||'MeshCore API unavailable'}`;addButton.disabled=false;addButton.textContent='Add key'; }
+    const key=keyInput.value.trim().toUpperCase();
+    if(!/^[A-F0-9]{64}$/.test(key)){settingsUi.keyError=true;rerender();return;}
+    settingsUi.key='';
+    if(!trackedKeys.some(item=>item.key.toLowerCase()===key.toLowerCase())){
+      const item={key,name:'',counterStartedAt:Date.now(),packetCount:0,seenPacketIds:[]};
+      trackedKeys.push(item);saveTrackedKeys();
+      resolveTrackedKeyName(item);
+    }
+    rerender();
   });
-  keyInput.addEventListener('input',()=>{error.textContent='';});
-  screen.querySelectorAll('[data-remove-key]').forEach(button=>button.addEventListener('click',()=>{trackedKeys.splice(Number(button.dataset.removeKey),1);saveTrackedKeys();renderSettings();}));
-  document.getElementById('open-api-log')?.addEventListener('click',()=>{ settingsApiLogOpen=true; renderSettings(); });
-  document.getElementById('api-log-close')?.addEventListener('click',()=>{ settingsApiLogOpen=false; renderSettings(); });
-  document.getElementById('api-log-backdrop')?.addEventListener('click',event=>{ if(event.target===event.currentTarget){ settingsApiLogOpen=false; renderSettings(); } });
-  document.getElementById('api-log-reset')?.addEventListener('click',()=>{ resetApiHealthLog(activeApiSource); renderSettings(); });
-  document.getElementById('close-application')?.addEventListener('click',closeApplication);
+  screen.querySelectorAll('[data-device-info]').forEach(element=>{
+    const open=()=>openNodeInfo(trackedKeys[Number(element.dataset.deviceInfo)]);
+    element.addEventListener('click',open);
+    element.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();open();}});
+  });
+  screen.querySelectorAll('[data-remove-key]').forEach(button=>button.addEventListener('click',()=>{trackedKeys.splice(Number(button.dataset.removeKey),1);saveTrackedKeys();rerender();}));
+  document.getElementById('open-api-log')?.addEventListener('click',()=>{ settingsApiLogOpen=true; rerender(); });
+  document.getElementById('api-log-close')?.addEventListener('click',()=>{ settingsApiLogOpen=false; rerender(); });
+  document.getElementById('api-log-backdrop')?.addEventListener('click',event=>{ if(event.target===event.currentTarget){ settingsApiLogOpen=false; rerender(); } });
+  document.getElementById('api-log-reset')?.addEventListener('click',()=>{ resetApiHealthLog(activeApiSource); rerender(); });
+  document.getElementById('close-application')?.addEventListener('click',event=>{event.currentTarget.disabled=true;event.currentTarget.textContent='Closing…';closeApplication();});
+}
+// M² resolveNames(retries = 5): look the key up in the node directory, retrying
+// while the name is still unknown; the row shows "Looking up name…" meanwhile.
+async function resolveTrackedKeyName(item, retries=5) {
+  for(let attempt=0;attempt<retries&&!item.name;attempt++){
+    try {
+      const response=await fetch(apiProxyUrl('node',{id:item.key}),{cache:'no-store'});
+      const result=await response.json();
+      if(response.ok&&String(result.key||'').toLowerCase()===item.key.toLowerCase()&&String(result.name||'').trim()){
+        item.name=String(result.name).trim();saveTrackedKeys();
+        if(currentScreen()==='Settings')renderSettings();
+        return;
+      }
+    } catch {}
+    await new Promise(resolve=>setTimeout(resolve,3000*(attempt+1)));
+  }
 }
 function renderMyLog() {
   const rows=myLogPackets.map(packet=>`<button class="packet-row packet-own my-log-row" data-my-log-id="${escapeHtml(packet.id)}" type="button"><span class="my-log-head"><b>${escapeHtml(packetType(packet))}</b><small>${escapeHtml(packetTime(packet))}</small></span><strong>${escapeHtml(myLogNodeName(packet))}</strong><span class="my-log-detail">${renderTrackedText(packetSummary(packet))}</span></button>`).join('');
@@ -1162,7 +1199,7 @@ async function renderChannels() {
       <button class="channel-open" type="button"><b>${escapeHtml(item.name)}${item.isPrivate?' 🔑':''}</b><span>${escapeHtml(String(item.hash||'').slice(0,2))} · ${item.loading?'Loading…':item.error?'Error':`${(item.messages||[]).length} messages`}</span></button>
       ${trackedUnread?`<b class="unread-badge tracked">${trackedUnread}</b>`:''}${otherUnread?`<b class="unread-badge">${otherUnread}</b>`:''}
       ${item.isPrivate?`<button type="button" data-rename-channel="${escapeHtml(item.name)}" title="Rename channel">✎</button>`:''}
-      <button type="button" data-remove-channel="${escapeHtml(item.name)}" title="Remove channel">🗑</button>
+      <button type="button" data-remove-channel="${escapeHtml(item.name)}" title="Remove channel">${TRASH_ICON}</button>
     </div>`;
   }).join('');
   const messages=channel?.messages||[];

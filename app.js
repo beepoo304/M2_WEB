@@ -41,7 +41,7 @@ function parseDecoded(packet) {
 function packetType(packet) { return labels[Number(packet.payload_type)] || `UNKNOWN ${safeText(packet.payload_type, '?')}`; }
 function packetTime(packet) {
   const date = new Date(packet.timestamp || packet.first_seen);
-  if (Number.isNaN(date.getTime())) return '—';
+  if (Number.isNaN(date.getTime())) return '--:--:--';
   return new Intl.DateTimeFormat('pl-PL', { timeZone:'Europe/Warsaw', hour:'2-digit', minute:'2-digit', second:'2-digit' }).format(date);
 }
 function relativeAge(packet) {
@@ -54,7 +54,7 @@ function relativeAge(packet) {
 }
 function packetSummary(packet) {
   const decoded = parseDecoded(packet), type = Number(packet.payload_type);
-  if (type === 5 || type === 6) return decoded.text ? `${safeText(decoded.channel, 'Channel')} · ${decoded.text}` : `${safeText(decoded.channel, 'Channel')} · ${safeText(decoded.text, 'Encrypted message')}`;
+  if (type === 5) { const channel=String(decoded.channel||'').trim()||'Private channel', text=String(decoded.text||'').trim(); return text ? `${channel} · ${decoded.text}` : `${channel} · Message content unavailable`; }
   if (type === 4) return safeText(decoded.name, 'Node advertisement');
   if (type === 2) return 'Encrypted direct message';
   if (type === 8) return 'Path information';
@@ -98,7 +98,7 @@ function liveIdentityMarkup(packet) {
   if(sender)return escapeHtml(`Sender: ${sender}`);
   const role=flags.repeater?'REPEATER':flags.chat?'COMPANION':flags.room?'ROOM SERVER':flags.sensor?'SENSOR':'UNKNOWN';
   const name=String(decoded.name||'').trim();
-  if(role==='COMPANION')return `<span class="companion-role">COMPANION</span>: ${escapeHtml(name||'Unknown')}`;
+  if(role==='COMPANION'&&name)return `<span class="companion-role">COMPANION</span>: ${escapeHtml(name)}`;
   if(name)return escapeHtml(`${role}: ${name}`);
   return escapeHtml(`OBSERVER: ${packet.observer_name||'Unknown observer'}`);
 }
@@ -117,10 +117,10 @@ function renderTrackedText(value) {
   return output+escapeHtml(text.slice(cursor));
 }
 function packetPath(packet) {
-  const raw=Array.isArray(packet._parsedPath) ? packet._parsedPath : (()=>{try{return JSON.parse(packet.path_json||'[]')}catch{return[]}})();
+  const raw=Array.isArray(packet._parsedPath) ? packet._parsedPath : (()=>{try{const value=JSON.parse(packet.path_json||'[]');return Array.isArray(value)?value:['INVALID']}catch{return['INVALID']}})();
   // M² keeps every API path entry intact. In particular, adjacent 1-byte
   // entries must never be merged: doing so corrupts a trace route.
-  return Array.isArray(raw) ? raw.map(hop=>String(hop||'').trim().toUpperCase()) : [];
+  return raw.map(hop=>String(hop??'').trim().toUpperCase());
 }
 function pathSummary(packet) {
   const path = packetPath(packet);
@@ -139,7 +139,9 @@ function relationMatches(packet) {
   const decoded=parseDecoded(packet),path=packetPath(packet),resolved=Array.isArray(packet.resolved_path)?packet.resolved_path:[];
   const out=[],add=(relation,item)=>{if(item&&!out.some(match=>match.relation===relation&&match.key===item.key))out.push({relation,key:item.key,name:item.name});};
   
-  // Source, destination, observer and mentions match regardless of path structure (e.g. adverts, direct packets)
+  // M² (CoreScopeRepository.parse) builds every direct relation only when the
+  // whole path is trackable: a single 1-byte hop makes the packet ambiguous.
+  if(!path.every(reliableHash))return out;
   const source=exactTrackedKey(decoded.pubKey||decoded.publicKey||decoded.srcPubKey||decoded.srcKey);
   const sourceHash=uniqueKeyForHash(decoded.srcHash);
   const destination=exactTrackedKey(decoded.destKey)||uniqueKeyForHash(decoded.destHash);
@@ -147,16 +149,11 @@ function relationMatches(packet) {
   add('DESTINATION',destination);
   add(trackedRelations.observer,exactTrackedKey(packet.observer_id));
   mentionedTrackedKeys(decoded.text).forEach(item=>add(trackedRelations.reply,item));
-
-  // Route hops are matched along the confirmed path
-  const trackable=path.every(reliableHash);
-  if(trackable){
-    path.forEach((hop,index)=>{
-      const resolvedKey=String(resolved[index]||'').toLowerCase();
-      const item=resolvedKey.startsWith(String(hop).toLowerCase())?exactTrackedKey(resolvedKey):uniqueKeyForHash(hop);
-      add(index===path.length-1?trackedRelations.end:trackedRelations.route,item);
-    });
-  }
+  path.forEach((hop,index)=>{
+    const resolvedKey=String(resolved[index]||'').toLowerCase();
+    const item=resolvedKey.startsWith(String(hop).toLowerCase())?exactTrackedKey(resolvedKey):uniqueKeyForHash(hop);
+    add(index===path.length-1?trackedRelations.end:trackedRelations.route,item);
+  });
   if(Number(packet.payload_type)===9&&path.every(hop=>reliableHash(hop))&&path.some(hop=>uniqueKeyForHash(hop)))
     path.forEach(hop=>add(trackedRelations.route,uniqueKeyForHash(hop)));
   return out;
@@ -225,14 +222,33 @@ function missingGpsHashes(packet) {
   }));
   return result;
 }
+// M² ownTraffic: any confirmed relation (DESTINATION included), or a trackable
+// path whose sender/node name or @mention names a saved device.
+function ownTrafficByName(packet) {
+  if(!packetPath(packet).every(reliableHash))return false;
+  const decoded=parseDecoded(packet);
+  const names=new Set(trackedKeys.map(item=>item.name.trim().toLowerCase()).filter(Boolean));
+  return names.has(String(decoded.sender||'').trim().toLowerCase())||names.has(String(decoded.name||'').trim().toLowerCase())||mentionedTrackedKeys(decoded.text).length>0;
+}
 function packetAccent(packet,matches) {
   const path=packetPath(packet);
   // Match Android LiveLogScreen precedence: ambiguous 1-byte route, then reply, then own traffic.
   if(path.some(hop=>String(hop).length===2&&/^[a-f0-9]{2}$/i.test(String(hop))))return 'packet-one-byte';
   if(matches.some(match=>match.relation===trackedRelations.reply))return 'packet-reply';
-  if(matches.some(match=>match.relation!==trackedRelations.reply))return 'packet-own';
+  if(matches.length||relationMatches(packet).some(match=>match.relation==='DESTINATION')||ownTrafficByName(packet))return 'packet-own';
   return '';
 }
+// TrackedKeyRelations.labels(): fixed relation order, keys sorted, "RELATION · XXXX".
+const RELATION_LABEL_ORDER=[trackedRelations.source,trackedRelations.end,trackedRelations.reply,trackedRelations.route,trackedRelations.observer];
+function relationLabels(matches) {
+  const seen=new Set(), out=[];
+  RELATION_LABEL_ORDER.forEach(relation=>matches.filter(match=>match.relation===relation).map(match=>match.key.toUpperCase()).sort().forEach(key=>{
+    const label=`${relation} · ${key.slice(0,4)}`;
+    if(!seen.has(label)){seen.add(label);out.push({relation,key,label});}
+  }));
+  return out;
+}
+
 function loadTrackedKeys() {
   try {
     const parsed=JSON.parse(sessionStorage.getItem(KEY_STORAGE)||'[]');
@@ -575,7 +591,7 @@ function liveRowHtml(packet) {
   const html=`<button class="packet-row ${accent}" data-packet-id="${escapeHtml(packet.id)}" type="button">
       <span class="packet-time"><b>${packetTime(packet)}</b><small class="packet-age"></small></span>
       <span class="packet-type type-${Number(packet.payload_type)}">${escapeHtml(packetType(packet))}<small>${escapeHtml((packet.direction || 'rx').toUpperCase())}</small></span>
-      <span class="packet-copy"><strong>${liveIdentityMarkup(packet)}</strong>${packetFlagsMarkup(packet)}${packetPath(packet).some(hop=>String(hop).length===2&&/^[a-f\d]{2}$/i.test(String(hop)))?'<small class="one-byte-marker">1 byte</small>':''}<span>${renderTrackedText(preview)}</span><small>${escapeHtml(packet.observer_iata || 'Observer')} · ${Number(packet.observation_count || 1)} observation${Number(packet.observation_count || 1) === 1 ? '' : 's'}</small>${missingGpsHashes(packet).map(hash=>`<b class="no-gps">NO GPS FOR ${escapeHtml(hash)}</b>`).join('')}${matches.length?`<span class="key-match-list">${matches.map(match=>`<b class="${match.relation===trackedRelations.reply?'reply':''}">${escapeHtml(match.relation)} · ${escapeHtml(match.name || keyName(match.key))}</b>${match.relation===trackedRelations.reply&&replyHasNoRoute(packet,match.key)?'<b class="no-route">NO ROUTE</b>':''}`).join('')}</span>`:''}</span>
+      <span class="packet-copy"><strong>${liveIdentityMarkup(packet)}</strong>${packetFlagsMarkup(packet)}${packetPath(packet).some(hop=>String(hop).length===2&&/^[a-f\d]{2}$/i.test(String(hop)))?'<small class="one-byte-marker">1 byte</small>':''}<span>${renderTrackedText(preview)}</span><small>${escapeHtml(packet.observer_iata || 'Observer')} · ${Number(packet.observation_count || 1)} observation${Number(packet.observation_count || 1) === 1 ? '' : 's'}</small>${missingGpsHashes(packet).map(hash=>`<b class="no-gps">NO GPS FOR ${escapeHtml(hash)}</b>`).join('')}${matches.length?`<span class="key-match-list">${relationLabels(matches).map(match=>`<b class="${match.relation===trackedRelations.reply?'reply':''}" title="${escapeHtml(keyName(match.key))}">${escapeHtml(match.label)}</b>${match.relation===trackedRelations.reply&&replyHasNoRoute(packet,match.key)?'<b class="no-route">NO ROUTE</b>':''}`).join('')}</span>`:''}</span>
       <span class="packet-route">${escapeHtml(pathSummary(packet))}<small>${packet.rssi == null ? '' : `${escapeHtml(packet.rssi)} dBm`}</small></span>
     </button>`;
   packet._rowMemo=memo; packet._rowHtml=html;

@@ -978,7 +978,10 @@ function renderApiLogDialog() {
 }
 // Settings 1:1 with M² SettingsScreen.kt: one active Live API picked from the
 // saved list, tracked device keys with counters, export location, about.
-const settingsUi={ apiMenu:false, addApi:false, newApi:'', apiError:false, url:'', showKey:false, keyError:false, key:'' };
+const settingsUi={ apiMenu:false, addApi:false, newApi:'', apiError:false, url:'', showKey:false, keyError:false, key:'', exportDir:null };
+M2Export.ready.then(()=>{settingsUi.exportDir=M2Export.dir;});
+// Toast jak Toast.makeText w APK.
+function showSettingsToast(text){document.querySelector('.m2-toast')?.remove();const t=document.createElement('div');t.className='m2-toast';t.textContent=text;document.body.appendChild(t);setTimeout(()=>t.remove(),2200);}
 const TRASH_ICON='<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M16 9v10H8V9h8m-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1zM18 7H6v12c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7z"/></svg>';
 const PROTECTED_APIS=['https://mc.inside.net.pl','https://live.meshcorekk.xyz'];
 function deviceCounterStart(value) {
@@ -1004,6 +1007,9 @@ function renderSettings() {
     <hr class="settings-divider">
     <b class="settings-title">EXPORT LOCATION</b>
     <p class="settings-muted">DEFAULT: Downloads (browser)</p>
+    ${settingsUi.exportDir?`<p class="settings-selected">SELECTED: ${escapeHtml(settingsUi.exportDir.name)}</p>`:''}
+    <div class="settings-export-actions"><button type="button" class="settings-button" id="export-save">Save</button><button type="button" class="settings-button outlined" id="export-choose" ${M2Export.supported?'':'disabled title="This browser can only save to Downloads"'}>Choose location</button>${settingsUi.exportDir?'<button type="button" class="text-button" id="export-default">Default</button>':''}</div>
+    ${M2Export.supported?'':'<p class="settings-muted">This browser can only save to Downloads.</p>'}
     <hr class="settings-divider">
     <a class="settings-kofi" href="https://ko-fi.com/beepoo304" target="_blank" rel="noopener noreferrer"><b>Support M2 on Ko-fi</b><span>ko-fi.com/beepoo304</span></a>
     <hr class="settings-divider flush">
@@ -1047,6 +1053,9 @@ function renderSettings() {
   document.getElementById('api-log-close')?.addEventListener('click',()=>{ settingsApiLogOpen=false; rerender(); });
   document.getElementById('api-log-backdrop')?.addEventListener('click',event=>{ if(event.target===event.currentTarget){ settingsApiLogOpen=false; rerender(); } });
   document.getElementById('api-log-reset')?.addEventListener('click',()=>{ resetApiHealthLog(activeApiSource); rerender(); });
+  document.getElementById('export-choose')?.addEventListener('click',async()=>{try{settingsUi.exportDir=await M2Export.choose();rerender();}catch{}});
+  document.getElementById('export-default')?.addEventListener('click',()=>{settingsUi.exportDir=null;rerender();});
+  document.getElementById('export-save')?.addEventListener('click',async()=>{await M2Export.save(settingsUi.exportDir);showSettingsToast('Export location saved');});
   document.getElementById('close-application')?.addEventListener('click',event=>{event.currentTarget.disabled=true;event.currentTarget.textContent='Closing…';closeApplication();});
 }
 // M² resolveNames(retries = 5): look the key up in the node directory, retrying
@@ -1076,7 +1085,7 @@ function renderMyLog() {
   screen.querySelector('.copy-packet-hash')?.addEventListener('click',event=>copyValue(liveState.selected?.hash,event.currentTarget));
   screen.querySelector('.copy-source-key')?.addEventListener('click',event=>{if(liveState.selected)copyValue(detailKey(liveState.selected),event.currentTarget);});
   document.getElementById('clear-my-log')?.addEventListener('click',()=>{clearMyLog();renderMyLog();});
-  document.getElementById('export-my-log')?.addEventListener('click',()=>{const content=myLogPackets.map(packet=>`${packetTime(packet)} · ${packetType(packet)} · ${liveIdentityLabel(packet)}\n${packetSummary(packet)}\nHash: ${packet.hash||'—'}\n`).join('\n');const blob=new Blob([content],{type:'text/plain'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=`M2_MY_LOG_${new Date().toISOString().replace(/[:.]/g,'-')}.txt`;link.click();URL.revokeObjectURL(url);});
+  document.getElementById('export-my-log')?.addEventListener('click',()=>{const content=myLogPackets.map(packet=>`${packetTime(packet)} · ${packetType(packet)} · ${liveIdentityLabel(packet)}\n${packetSummary(packet)}\nHash: ${packet.hash||'—'}\n`).join('\n');const name=`M2_MY_LOG_${new Date().toISOString().replace(/[:.]/g,'-')}.txt`;M2Export.write(name,new Blob([content],{type:'text/plain'})).then(where=>showSettingsToast(`${name} saved in ${where}`),()=>showSettingsToast('Cannot save log'));});
 }
 // ---------- Ekran Channels: pełny port z M² Android (ChannelsScreen.kt) ----------
 const channelUiState={ add:false, addMode:null, namedPublic:false, input:'', invalid:false, renameTarget:'', renameText:'', statistics:false, appStatistics:false, details:null, detailsLoading:false };

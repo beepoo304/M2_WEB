@@ -410,9 +410,10 @@ body.map-fullscreen .screen { position:relative; width:100%; max-width:none; mar
 .my-log-row .my-log-detail { color:var(--on-surface-variant); font-size:11px; overflow-wrap:anywhere; }
 @media (max-width:640px) { .map-panel-head { margin-bottom:6px; } .map-controls, .map-buttons, .map-counters { gap:6px; } .map-buttons button { min-height:38px; } .map-counters>div { padding:6px 8px; } .longest-tile { padding:8px 12px; } }
 /* ---------- LIVE LOG 1:1 with M² LiveLogScreen ---------- */
-.live-log-head { display:flex; align-items:center; gap:12px; padding:16px; background:var(--surface); border:1px solid var(--outline); border-radius:17px 17px 0 0; }
+.live-log-head { display:flex; align-items:center; gap:12px; padding:16px; background:#1c2023; position:sticky; top:0; z-index:5; box-shadow:0 1px 0 var(--outline); border:1px solid var(--outline); border-radius:17px 17px 0 0; }
 .live-log-head>div { display:flex; flex-direction:column; gap:2px; margin-right:auto; }
 .live-log-head b { font-size:15px; font-weight:700; letter-spacing:.02em; }
+.live-screen .packet-list { background:var(--background); }
 .live-count { color:var(--on-surface-variant); font-size:11px; }
 .live-status { display:flex; align-items:center; gap:6px; padding:6px 8px; border:0; border-radius:8px; background:transparent; color:#f0a84b; font:500 14px inherit; font-family:inherit; cursor:pointer; }
 .live-status[data-state="connected"] { color:var(--primary); }
@@ -584,3 +585,10 @@ body.map-fs-on #map-canvas .leaflet-bottom { bottom:0; }
 .guide-lang select option { background:var(--surface); color:var(--on-surface); }
 .guide-section { border:.5px solid #80808080; border-radius:8px; padding:10px; }
 .guide-privacy { margin:4px 2px 0; color:var(--on-surface-variant); font-size:11px; line-height:1.5; }
+/* Wszystkie karty wyśrodkowane, ta sama szerokość co LIVE LOG */
+@media (min-width:601px) { #screen > .live-screen, #screen > .channels-screen, #screen > .settings-screen, #screen > .guide-screen { width:100%; max-width:988px; margin-left:auto; margin-right:auto; box-sizing:border-box; } }
+.settings-selected { margin:4px 0 0; font-size:12px; font-weight:500; color:var(--on-surface); }
+.settings-export-actions { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.settings-button.outlined { background:none; color:var(--primary); border:1px solid var(--outline); }
+.settings-button:disabled { opacity:.45; cursor:default; }
+.m2-toast { position:fixed; left:50%; bottom:calc(110px + env(safe-area-inset-bottom)); transform:translateX(-50%); z-index:3000; max-width:calc(100% - 32px); padding:10px 18px; border-radius:20px; background:#2c3135; color:var(--on-surface); font:13px "Segoe UI",system-ui,sans-serif; box-shadow:0 4px 14px #0006; }

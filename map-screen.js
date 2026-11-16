@@ -477,7 +477,7 @@ function mapRecStop() {
 function mapRecDialog(blob, key) {
   const ext = /mp4/.test(blob.type) ? 'mp4' : 'webm';
   const box = document.createElement('div'); box.className = 'dialog-backdrop';
-  box.innerHTML = `<section class="dialog" role="dialog" aria-modal="true" aria-label="Save animation"><h3>Save animation as ${ext.toUpperCase()}?</h3><p class="dialog-note">The animated longest route will be saved in Downloads.</p><div class="dialog-actions"><button type="button" class="dialog-confirm" data-yes>YES</button><button type="button" class="dialog-cancel" data-no>NO</button></div></section>`;
+  box.innerHTML = `<section class="dialog" role="dialog" aria-modal="true" aria-label="Save animation"><h3>Save animation as ${ext.toUpperCase()}?</h3><p class="dialog-note">The animated longest route will be saved in ${M2Export.label()}.</p><div class="dialog-actions"><button type="button" class="dialog-confirm" data-yes>YES</button><button type="button" class="dialog-cancel" data-no>NO</button></div></section>`;
   const close = () => box.remove();
   box.addEventListener('click', e => { if (e.target === box) close(); });
   box.querySelector('[data-no]').addEventListener('click', close);
@@ -487,13 +487,8 @@ function mapRecDialog(blob, key) {
       const d = new Date(), p2 = n => String(n).padStart(2, '0');
       const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
       const name = `M2-${String(key || '').slice(0, 4).toUpperCase()}-${stamp}-flight.${ext}`;
-      const link = document.createElement('a');
-      link.href = URL.createObjectURL(blob); link.download = name;
-      document.body.appendChild(link); link.click(); link.remove();
-      setTimeout(() => URL.revokeObjectURL(link.href), 60000);
-      mapMessage(`Saved ${name}`);
-    } catch { mapMessage(`Cannot save ${ext.toUpperCase()}`); }
-    mapProgress(false);
+      M2Export.write(name, blob).then(where => mapMessage(`Saved ${name} in ${where}`), () => mapMessage(`Cannot save ${ext.toUpperCase()}`)).finally(() => mapProgress(false));
+    } catch { mapMessage(`Cannot save ${ext.toUpperCase()}`); mapProgress(false); }
   });
   document.body.appendChild(box);
 }
@@ -600,7 +595,7 @@ function mapNextFileName() {
   try { localStorage.setItem('m2-web-map-files-v1', JSON.stringify([...used, name].slice(-500))); } catch {}
   return name;
 }
-function mapExportFile() {
+async function mapExportFile() {
   if (!mapState.key || !mapState.events.size) { mapMessage('No map to save'); return; }
   mapMessage('Exporting map…'); mapProgress(true);
   try {
@@ -612,11 +607,8 @@ function mapExportFile() {
       events: [...mapState.events.values()].map(mapEventToFile)
     };
     const blob = new Blob([JSON.stringify({ format: 'M2_MAP', version: 1, name, session })], { type: 'application/octet-stream' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob); link.download = `${name}.m2map`;
-    document.body.appendChild(link); link.click(); link.remove();
-    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-    mapMessage(`Map exported to Downloads/${name}.m2map`);
+    const where = await M2Export.write(`${name}.m2map`, blob);
+    mapMessage(`Map exported to ${where}/${name}.m2map`);
   } catch { mapMessage('Cannot save map'); }
   finally { mapProgress(false); }
 }

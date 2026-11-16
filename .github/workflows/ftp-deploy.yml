@@ -40,18 +40,6 @@ jobs:
           lftp -u "$FTP_USER","$FTP_PASSWORD" "$FTP_HOST" <<'EOF'
           set ftp:ssl-protect-data true
           set net:max-retries 3
-          mirror -R -v --parallel 5 \
-            --exclude-glob .git/ \
-            --exclude-glob .github/ \
-            --exclude-glob test/ \
-            --exclude-glob node_modules/ \
-            --exclude-glob package.json \
-            --exclude-glob package-lock.json \
-            --exclude-glob dev-server.js \
-            --exclude-glob .gitignore \
-            --exclude-glob README.md \
-            --exclude-glob CHANGELOG.md \
-            --exclude-glob LICENSE \
-            . httpdoc
+          mirror -R -v --parallel 5 --exclude-glob .git/ --exclude-glob .github/ --exclude-glob test/ --exclude-glob node_modules/ --exclude-glob package.json --exclude-glob package-lock.json --exclude-glob dev-server.js --exclude-glob .gitignore --exclude-glob README.md --exclude-glob CHANGELOG.md --exclude-glob LICENSE . httpdoc
           quit
           EOF

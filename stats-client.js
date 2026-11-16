@@ -1,7 +1,7 @@
 // M² Web — anonimowe statystyki dla panelu /admin/ (wejścia, zakładki, śledzone klucze, kanały publiczne, błędy).
 (() => {
   const ENDPOINT = 'stats/collect.php';
-  const SENT_KEYS = 'm2-web-stats-keys-v1', SENT_CHANNELS = 'm2-web-stats-channels-v1';
+  const SENT_KEYS = 'm2-web-stats-keys-v2', SENT_CHANNELS = 'm2-web-stats-channels-v1';
   let errors = 0, keysTimer = 0;
 
   function send(event) {

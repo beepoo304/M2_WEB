@@ -5,7 +5,7 @@ const liveState = { packets: [], loading: false, error: '', lastSuccess: 0, sele
 // observation count changed or its cached route analysis is older than 30 s.
 const observationMatchCache = new Map();
 const OBSERVATION_CACHE_MS = 30_000;
-const MAX_OBSERVATION_REQUESTS = 6;
+const MAX_OBSERVATION_REQUESTS = 2;
 const gpsDirectoryCache = new Map();
 const GPS_DIRECTORY_CACHE_MS = 3_600_000;
 const KEY_STORAGE = 'm2-web-tracked-keys-v1';
@@ -559,50 +559,112 @@ function updateActiveApiLabel() {
   const label=document.getElementById('active-api-source');
   if(label)label.textContent=sourceLabel(activeApiSource);
 }
-function renderLive() {
-  const listEl = screen.querySelector('.packet-list');
-  const savedScroll = listEl ? listEl.scrollTop : null;
-  const docScroll = window.scrollY;
-  updateActiveApiLabel();
-  const status = document.querySelector('.connection-pill span:last-child');
-  if (status) status.textContent = liveState.loading ? 'UPDATING' : liveState.error ? 'OFFLINE' : liveState.lastSuccess ? 'LIVE' : 'CONNECTING';
-  const dot = document.querySelector('.connection-pill .status-dot');
-  if (dot) dot.classList.toggle('offline', !!liveState.error);
-  const rows = liveState.packets.map(packet => {
-    const decoded = parseDecoded(packet), path = packetPath(packet), relations=enhancedMatches(packet), matches=relations, accent=packetAccent(packet,relations);
-    const preview = packetSummary(packet);
-    return `<button class="packet-row ${accent}" data-packet-id="${escapeHtml(packet.id)}" type="button">
-      <span class="packet-time"><b>${packetTime(packet)}</b><small class="packet-age">${relativeAge(packet)}</small></span>
+// LIVE renders like M²'s keyed LazyColumn: the shell is built once, rows are
+// keyed by packet id and only rows whose markup changed are replaced.
+const liveDom = { list:null, rows:new Map() };
+let liveRenderRevision = 0;
+function liveRowMemoKey(packet) {
+  const cached=observationMatchCache.get(String(packet.id));
+  return `${liveRenderRevision}|${packet.observation_count||1}|${cached?.checkedAt||0}|${gpsDirectoryCache.get(activeApiSource)?.loadedAt||0}|${parseDecoded(packet).text||''}`;
+}
+function liveRowHtml(packet) {
+  const memo=liveRowMemoKey(packet);
+  if(packet._rowMemo===memo&&packet._rowHtml)return packet._rowHtml;
+  const relations=enhancedMatches(packet), matches=relations, accent=packetAccent(packet,relations);
+  const preview=packetSummary(packet);
+  const html=`<button class="packet-row ${accent}" data-packet-id="${escapeHtml(packet.id)}" type="button">
+      <span class="packet-time"><b>${packetTime(packet)}</b><small class="packet-age"></small></span>
       <span class="packet-type type-${Number(packet.payload_type)}">${escapeHtml(packetType(packet))}<small>${escapeHtml((packet.direction || 'rx').toUpperCase())}</small></span>
       <span class="packet-copy"><strong>${liveIdentityMarkup(packet)}</strong>${packetFlagsMarkup(packet)}${packetPath(packet).some(hop=>String(hop).length===2&&/^[a-f\d]{2}$/i.test(String(hop)))?'<small class="one-byte-marker">1 byte</small>':''}<span>${renderTrackedText(preview)}</span><small>${escapeHtml(packet.observer_iata || 'Observer')} · ${Number(packet.observation_count || 1)} observation${Number(packet.observation_count || 1) === 1 ? '' : 's'}</small>${missingGpsHashes(packet).map(hash=>`<b class="no-gps">NO GPS FOR ${escapeHtml(hash)}</b>`).join('')}${matches.length?`<span class="key-match-list">${matches.map(match=>`<b class="${match.relation===trackedRelations.reply?'reply':''}">${escapeHtml(match.relation)} · ${escapeHtml(match.name || keyName(match.key))}</b>${match.relation===trackedRelations.reply&&replyHasNoRoute(packet,match.key)?'<b class="no-route">NO ROUTE</b>':''}`).join('')}</span>`:''}</span>
       <span class="packet-route">${escapeHtml(pathSummary(packet))}<small>${packet.rssi == null ? '' : `${escapeHtml(packet.rssi)} dBm`}</small></span>
     </button>`;
-  }).join('');
-  const last = liveState.lastSuccess ? new Intl.DateTimeFormat('pl-PL',{timeZone:'Europe/Warsaw',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(liveState.lastSuccess) : '—';
+  packet._rowMemo=memo; packet._rowHtml=html;
+  return html;
+}
+function liveRowElement(html) { const template=document.createElement('template'); template.innerHTML=html.trim(); return template.content.firstElementChild; }
+function ensureLiveShell() {
+  if(liveDom.list?.isConnected)return false;
   screen.innerHTML = `<section class="live-screen">
     <div class="live-heading"><div><div class="eyebrow">MESHCORE NETWORK</div><h1>Live packets</h1><p>Packets observed across the public MeshCore feed.</p></div></div>
-    <div class="live-meta"><span class="live-count">${liveState.packets.length} / 250 packets</span><span id="last-updated">Updated ${last}</span></div>
-    ${liveState.error ? `<div class="feed-error"><strong>Feed temporarily unavailable</strong><span>${escapeHtml(liveState.error)}</span></div>` : ''}
-    <div class="packet-list">${rows || `<div class="empty-feed">${liveState.loading?'Connecting to the live feed…':'No packets received yet.'}</div>`}</div>
-  </section>${liveState.selected ? renderDetail(liveState.selected) : ''}`;
-  screen.querySelectorAll('.packet-row').forEach(row => row.addEventListener('click', () => {
-    liveState.selected = liveState.packets.find(item => String(item.id) === row.dataset.packetId) || null; liveState.details=null; liveState.detailsError=''; liveState.showAllRoutes=false; loadPacketDetails(liveState.selected); renderLive();
-  }));
-  screen.querySelector('.detail-close')?.addEventListener('click', closeDetail);
-  screen.querySelector('.detail-close-secondary')?.addEventListener('click', closeDetail);
-  screen.querySelector('.route-toggle')?.addEventListener('click',()=>{liveState.showAllRoutes=!liveState.showAllRoutes;renderLive();});
-  screen.querySelector('.packet-detail-backdrop')?.addEventListener('click', event => { if(event.target === event.currentTarget) closeDetail(); });
-  screen.querySelector('.copy-packet-hash')?.addEventListener('click', event => copyValue(liveState.selected?.hash,event.currentTarget));
-  screen.querySelector('.copy-source-key')?.addEventListener('click', event => {const decoded=parseDecoded(liveState.details?.packet || liveState.selected || {});copyValue(decoded.pubKey||decoded.publicKey||decoded.srcPubKey||decoded.srcKey,event.currentTarget);});
-  if (savedScroll !== null) {
-    const newListEl = screen.querySelector('.packet-list');
-    if (newListEl) newListEl.scrollTop = savedScroll;
-  }
-  window.scrollTo(0, docScroll);
+    <div class="live-meta"><span class="live-count"></span><span id="last-updated"></span></div>
+    <div class="feed-error-host"></div>
+    <div class="packet-list"></div>
+  </section><div id="live-detail-host"></div>`;
+  liveDom.list=screen.querySelector('.packet-list'); liveDom.rows.clear();
+  return true;
 }
+function firstVisibleLiveRow() {
+  if(window.scrollY<40)return null;
+  for(const row of liveDom.list.children){ const top=row.getBoundingClientRect().top; if(row.getBoundingClientRect().bottom>0)return {id:row.dataset.packetId,top}; }
+  return null;
+}
+function patchLiveList() {
+  const list=liveDom.list, packets=liveState.packets;
+  if(!packets.length){ liveDom.rows.clear(); list.innerHTML=`<div class="empty-feed">${liveState.loading||!liveState.lastSuccess?'Connecting to the live feed…':'No packets received yet.'}</div>`; return; }
+  list.querySelector('.empty-feed')?.remove();
+  // When the reader is scrolled into the list, keep the row under their eyes
+  // in place instead of letting new packets push it down.
+  const anchor=firstVisibleLiveRow();
+  const keep=new Set(); let previous=null;
+  for(const packet of packets){
+    const id=String(packet.id); keep.add(id);
+    const html=liveRowHtml(packet);
+    let entry=liveDom.rows.get(id);
+    if(!entry){ entry={html,el:liveRowElement(html)}; liveDom.rows.set(id,entry); setRowAge(entry.el,packet); }
+    else if(entry.html!==html){ const el=liveRowElement(html); if(entry.el.isConnected)entry.el.replaceWith(el); entry.el=el; entry.html=html; setRowAge(el,packet); }
+    const expected=previous?previous.nextElementSibling:list.firstElementChild;
+    if(expected!==entry.el)list.insertBefore(entry.el,expected);
+    previous=entry.el;
+  }
+  for(const [id,entry] of liveDom.rows) if(!keep.has(id)){ entry.el.remove(); liveDom.rows.delete(id); }
+  if(anchor){ const row=liveDom.rows.get(anchor.id)?.el; if(row?.isConnected){ const delta=row.getBoundingClientRect().top-anchor.top; if(Math.abs(delta)>=1)window.scrollBy(0,delta); } }
+}
+function setRowAge(row,packet) { const age=row.querySelector('.packet-age'); if(age){ const text=relativeAge(packet); if(age.textContent!==text)age.textContent=text; } }
+function updateLiveMeta() {
+  const count=screen.querySelector('.live-count'); if(count)count.textContent=`${liveState.packets.length} / 250 packets`;
+  const host=screen.querySelector('.feed-error-host');
+  if(host){ const html=liveState.error?`<div class="feed-error"><strong>Feed temporarily unavailable</strong><span>${escapeHtml(liveState.error)}</span></div>`:''; if(host.dataset.html!==html){host.innerHTML=html;host.dataset.html=html;} }
+}
+function renderLiveDetail() {
+  if(currentScreen()!=='Live')return;
+  ensureLiveShell();
+  const host=document.getElementById('live-detail-host');
+  if(host)host.innerHTML=liveState.selected?renderDetail(liveState.selected):'';
+}
+// Cheap per-poll update: rows, counters and indicators only.
+function refreshLiveList() {
+  if(currentScreen()!=='Live')return;
+  const fresh=ensureLiveShell();
+  patchLiveList(); updateLiveMeta(); updateLiveIndicators();
+  if(fresh&&liveState.selected)renderLiveDetail();
+}
+function renderLive() {
+  liveRenderRevision++;
+  refreshLiveList();
+  renderLiveDetail();
+}
+function handleLiveClick(event) {
+  const target=event.target;
+  if(!(target instanceof Element)||currentScreen()!=='Live')return;
+  if(!target.closest('.live-screen, #live-detail-host'))return;
+  const row=target.closest('.packet-row[data-packet-id]');
+  if(row){
+    liveState.selected=liveState.packets.find(item=>String(item.id)===row.dataset.packetId)||null;
+    liveState.details=null; liveState.detailsError=''; liveState.showAllRoutes=false;
+    loadPacketDetails(liveState.selected,renderLiveDetail); return;
+  }
+  if(target.closest('.detail-close, .detail-close-secondary')){ closeDetail(); return; }
+  if(target.closest('.route-toggle')){ liveState.showAllRoutes=!liveState.showAllRoutes; renderLiveDetail(); return; }
+  if(target.classList.contains('packet-detail-backdrop')){ closeDetail(); return; }
+  const copyHash=target.closest('.copy-packet-hash');
+  if(copyHash){ copyValue(liveState.selected?.hash,copyHash); return; }
+  const copyKey=target.closest('.copy-source-key');
+  if(copyKey){ const decoded=parseDecoded(liveState.details?.packet||liveState.selected||{}); copyValue(decoded.pubKey||decoded.publicKey||decoded.srcPubKey||decoded.srcKey,copyKey); }
+}
+screen.addEventListener('click',handleLiveClick);
 async function copyValue(value,button) { if(!value)return; try{await navigator.clipboard.writeText(value);const old=button.textContent;button.textContent='Copied';setTimeout(()=>{if(button.isConnected)button.textContent=old;},1200);}catch{button.textContent='Copy unavailable';} }
-function closeDetail() { liveState.selected=null; liveState.details=null; liveState.detailsLoading=false; liveState.showAllRoutes=false; renderScreen(currentScreen()); }
-async function loadPacketDetails(packet, rerender=renderLive) {
+function closeDetail() { liveState.selected=null; liveState.details=null; liveState.detailsLoading=false; liveState.showAllRoutes=false; if(currentScreen()==='Live')renderLiveDetail(); else renderScreen(currentScreen()); }
+async function loadPacketDetails(packet, rerender=renderLiveDetail) {
   if(!packet) return;
   liveState.detailsLoading=true; liveState.detailsError=''; rerender();
   try { const cached=observationMatchCache.get(String(packet.id)); if(cached?.data?.loadSucceeded) liveState.details=cached.data; else { const response=await fetch(apiProxyUrl('packet',{id:String(packet.id)}),{cache:'no-store'}); if(!response.ok)throw new Error(`HTTP ${response.status}`); liveState.details=await response.json(); } }
@@ -657,65 +719,120 @@ function renderDetail(packet) {
   return `<div class="packet-detail-backdrop"><section class="packet-detail" role="dialog" aria-modal="true" aria-label="Packet details"><button class="detail-close" aria-label="Close packet details"><span aria-hidden="true">×</span><b>Close</b></button><div class="eyebrow">PACKET DETAILS · ${escapeHtml(packetType(packet))} · ${(packet.direction || 'rx').toUpperCase()}</div><h2>${escapeHtml(decoded.sender || decoded.name || 'Mesh packet')}</h2><p class="detail-message">${escapeHtml(packetSummary(source))}</p>${matches.length?`<div class="detail-key-matches">${matches.map(match=>`<b class="relation-chip ${match.relation===trackedRelations.reply?'reply':''}">${escapeHtml(match.relation)} · ${escapeHtml(match.name||keyName(match.key))}</b>`).join('')}</div>`:''}<dl>${fields.map(([key,value])=>`<div><dt>${escapeHtml(key)}</dt><dd>${escapeHtml(value)}</dd></div>`).join('')}</dl>${liveState.detailsLoading?'<p class="details-loading">Loading all observations and routes…</p>':''}${liveState.detailsError?`<p class="details-error">Could not load additional routes: ${escapeHtml(liveState.detailsError)}</p>`:''}${excludedOneByteRoutes?`<p class="route-excluded-note">1-byte routes excluded: ${excludedOneByteRoutes}</p>`:''}${eligibleRoutes.length?`<section class="observed-routes"><h3>${trackedRoutes.length&&!showAllRoutes?'TRACKED ROUTES':'OBSERVED ROUTES'} · ${displayedRoutes.length} ROUTES / ${observations.length} OBSERVATIONS</h3>${hashWidth?`<p class="route-hash-width">Path hashes: ${hashWidth} ${hashWidth===1?'byte':'bytes'} per hop</p>`:''}${routeMarkup}${trackedRoutes.length<eligibleRoutes.length?`<button class="route-toggle" type="button">${showAllRoutes?'Show tracked routes':`Show all ${eligibleRoutes.length} routes`}</button>`:''}</section>`:''}${decodedFields.length?`<div class="decoded-block"><span>DECODED FIELDS</span>${decodedFields.map(([key,value])=>`<div><b>${escapeHtml(key)}</b><code>${escapeHtml(typeof value==='object'?JSON.stringify(value):value)}</code></div>`).join('')}</div>`:''}${packet.raw_hex?`<div class="raw-block"><span>RAW HEX</span><code>${escapeHtml(packet.raw_hex)}</code></div>`:''}<div class="detail-actions"><button class="copy-packet-hash" type="button">Copy packet hash</button><button class="detail-close-secondary" type="button">Close packet</button>${sourceKey?'<button class="copy-source-key" type="button">Copy source key</button>':''}</div></section></div>`;
 }
 function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char])); }
+// M² polling model: sticky active source, failover only after 30 s of failure,
+// a failed alternative cools down for 180 s, retries back off 6 s → 30 s and a
+// hidden tab keeps polling slowly (30 s) instead of stopping.
+const FETCH_TIMEOUT_MS = 15_000;
+const FAILOVER_AFTER_MS = 30_000;
+const SOURCE_COOLDOWN_MS = 180_000;
+const HIDDEN_REFRESH_MS = 30_000;
+const UPDATING_GRACE_MS = 6_000;
+const sourceFailures = new Map();
+let pollFailures = 0, loadingStartedAt = 0, enrichRunning = false;
+async function fetchJson(url, timeoutMs=FETCH_TIMEOUT_MS) {
+  const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),timeoutMs);
+  try {
+    const response=await fetch(url,{cache:'no-store',signal:controller.signal});
+    if(!response.ok)throw new Error(`HTTP ${response.status}`);
+    return await response.json();
+  } catch(error) { throw error?.name==='AbortError'?new Error('Request timed out'):error; }
+  finally { clearTimeout(timer); }
+}
+function currentRefreshInterval() { return document.hidden ? Math.max(refreshIntervalMs,HIDDEN_REFRESH_MS) : refreshIntervalMs; }
+function pollSourceOrder(now=Date.now()) {
+  if(!apiSources.includes(activeApiSource))activeApiSource=apiSources[0];
+  const failing=sourceFailures.get(activeApiSource);
+  if(!failing||now-failing.since<FAILOVER_AFTER_MS)return [activeApiSource];
+  return [activeApiSource,...apiSources.filter(source=>source!==activeApiSource&&!((sourceFailures.get(source)?.cooldownUntil||0)>now))];
+}
+function noteSourceFailure(source, now=Date.now()) {
+  const entry=sourceFailures.get(source)||{since:now,cooldownUntil:0};
+  if(source!==activeApiSource)entry.cooldownUntil=now+SOURCE_COOLDOWN_MS;
+  sourceFailures.set(source,entry);
+}
+// Stable identity like M²: one entry per id, newest API order preserved, and
+// an unchanged packet keeps its object so cached parsing/decryption survive.
+function mergeFeedPackets(incoming) {
+  const previous=new Map(liveState.packets.map(packet=>[String(packet.id),packet]));
+  const seen=new Set(), result=[];
+  for(const packet of incoming){
+    const id=String(packet?.id??'');
+    if(!id||seen.has(id))continue;
+    seen.add(id);
+    const old=previous.get(id);
+    const same=old&&old.observation_count===packet.observation_count&&old.path_json===packet.path_json&&old.decoded_json===packet.decoded_json&&old.raw_hex===packet.raw_hex;
+    result.push(same?old:packet);
+    if(result.length>=250)break;
+  }
+  return result;
+}
 async function enrichPacketObservations(packets, source) {
-  if(!trackedKeys.length) return;
-  const savedDirectory=gpsDirectoryCache.get(source);
-  if(!savedDirectory || Date.now()-savedDirectory.loadedAt>=GPS_DIRECTORY_CACHE_MS) {
-    try {
-      const response=await fetch(apiProxyUrl('directory',{},source),{cache:'no-store'});
-      const data=await response.json();
-      if(response.ok&&Array.isArray(data.nodes)) gpsDirectoryCache.set(source,{loadedAt:Date.now(),nodes:data.nodes});
-    } catch { /* A missing directory simply suppresses the NO GPS marker. */ }
-  }
-  const activeIds=new Set(packets.map(packet=>String(packet.id)));
-  [...observationMatchCache.keys()].forEach(id=>{if(!activeIds.has(id))observationMatchCache.delete(id);});
-  const now=Date.now();
-  const candidates=packets.filter(packet=>Number(packet.observation_count||1)>1 || matchesForPacket(packet).length>0).filter(packet=>{
-    const cached=observationMatchCache.get(String(packet.id));
-    return !cached || cached.observationCount!==Number(packet.observation_count||1) || now-cached.checkedAt>=OBSERVATION_CACHE_MS;
-  });
-  let next=0;
-  async function worker(){
-    while(next<candidates.length){
-      const packet=candidates[next++];
+  if(!trackedKeys.length||enrichRunning) return;
+  enrichRunning=true;
+  let fetched=0;
+  try {
+    const savedDirectory=gpsDirectoryCache.get(source);
+    if(!savedDirectory || Date.now()-savedDirectory.loadedAt>=GPS_DIRECTORY_CACHE_MS) {
       try {
-        const response=await fetch(apiProxyUrl('packet',{id:String(packet.id)},source),{cache:'no-store'});
-        if(!response.ok)continue;
-        const raw=await response.json();
-        observationMatchCache.set(String(packet.id),{observationCount:Number(packet.observation_count||1),checkedAt:Date.now(),data:{...raw,loadSucceeded:true}});
-      } catch { /* The public feed remains usable if one details request fails. */ }
+        const data=await fetchJson(apiProxyUrl('directory',{},source));
+        if(Array.isArray(data.nodes)) { gpsDirectoryCache.set(source,{loadedAt:Date.now(),nodes:data.nodes}); fetched++; }
+      } catch { /* A missing directory simply suppresses the NO GPS marker. */ }
     }
-  }
-  await Promise.all(Array.from({length:Math.min(MAX_OBSERVATION_REQUESTS,candidates.length)},worker));
+    const activeIds=new Set(packets.map(packet=>String(packet.id)));
+    [...observationMatchCache.keys()].forEach(id=>{if(!activeIds.has(id))observationMatchCache.delete(id);});
+    const now=Date.now();
+    const candidates=packets.filter(packet=>Number(packet.observation_count||1)>1 || matchesForPacket(packet).length>0).filter(packet=>{
+      const cached=observationMatchCache.get(String(packet.id));
+      if(!cached)return true;
+      if(cached.failedAt)return now-cached.failedAt>=OBSERVATION_CACHE_MS;
+      return cached.observationCount!==Number(packet.observation_count||1) || now-cached.checkedAt>=OBSERVATION_CACHE_MS;
+    });
+    let next=0;
+    async function worker(){
+      while(next<candidates.length){
+        const packet=candidates[next++];
+        const previous=observationMatchCache.get(String(packet.id));
+        try {
+          const raw=await fetchJson(apiProxyUrl('packet',{id:String(packet.id)},source));
+          observationMatchCache.set(String(packet.id),{observationCount:Number(packet.observation_count||1),checkedAt:Date.now(),data:{...raw,loadSucceeded:true}});
+          fetched++;
+        } catch {
+          // Negative cache: keep any earlier good data, but do not retry for 30 s.
+          observationMatchCache.set(String(packet.id),previous?.data?{...previous,checkedAt:Date.now()}:{observationCount:Number(packet.observation_count||1),checkedAt:Date.now(),failedAt:Date.now()});
+        }
+      }
+    }
+    await Promise.all(Array.from({length:Math.min(MAX_OBSERVATION_REQUESTS,candidates.length)},worker));
+  } finally { enrichRunning=false; }
+  if(!fetched)return;
   // A route discovered only in the observation details counts for a saved key
   // exactly once, just like a direct source/observer match.
   recordTrackedPacketCounters(packets);
   updateMyLog(packets);
   mapIngest();
-  if(source===activeApiSource && currentScreen()==='Live' && !liveState.selected) renderLive();
+  if(source===activeApiSource && currentScreen()==='Live') refreshLiveList();
   if(source===activeApiSource && currentScreen()==='Map' && typeof updateMapView === 'function') updateMapView();
 }
 async function loadPackets(manual = false) {
-  if (liveState.loading || document.hidden || appClosed) return;
-  const previousIds=liveState.packets.map(item=>item.id).join(','), previousError=liveState.error;
-  liveState.loading = true; if(manual) renderLive();
+  if (liveState.loading || appClosed) return;
+  liveState.loading = true; loadingStartedAt = Date.now();
+  if(manual) updateRefreshCountdown();
   try {
     let lastError=null, result=null;
-    for(const source of apiSources){
+    for(const source of pollSourceOrder()){
       const startedAt=Date.now();
       try {
-        const response=await fetch(apiProxyUrl('packets',{limit:'250'},source),{cache:'no-store'});
-        if(!response.ok)throw new Error(`HTTP ${response.status}`);
-        const data=await response.json();
+        const data=await fetchJson(apiProxyUrl('packets',{limit:'250',_:String(Date.now())},source));
         if(!Array.isArray(data.packets))throw new Error('Invalid packet-feed response');
         recordApiHealth(source,true,Date.now()-startedAt);
+        sourceFailures.delete(source);
         result={source,packets:data.packets};break;
-      } catch(error) { lastError=error; recordApiHealth(source,false,Date.now()-startedAt); }
+      } catch(error) { lastError=error; recordApiHealth(source,false,Date.now()-startedAt); noteSourceFailure(source); }
     }
-    if(!result)throw new Error(`All configured APIs are unavailable${lastError?.message?`: ${lastError.message}`:''}`);
+    if(!result)throw new Error(`${apiSources.length>1?'All configured APIs are unavailable':'API unavailable'}${lastError?.message?`: ${lastError.message}`:''}`);
     activeApiSource=result.source;
     updateActiveApiLabel();
-    liveState.packets = result.packets.sort((a,b)=>new Date(b.timestamp||b.first_seen)-new Date(a.timestamp||a.first_seen));
+    liveState.packets = mergeFeedPackets(result.packets);
     recordTrackedPacketCounters(liveState.packets);
     updateMyLog(liveState.packets);
     appStatsAccept(liveState.packets);
@@ -723,36 +840,41 @@ async function loadPackets(manual = false) {
     await channelsDecryptLive(liveState.packets);
     mapIngest();
     channelStatsRefresh();
-    liveState.error = ''; liveState.lastSuccess = Date.now();
-  } catch (error) { liveState.error = error.message || 'Connection failed'; }
+    liveState.error = ''; liveState.lastSuccess = Date.now(); pollFailures = 0;
+  } catch (error) { liveState.error = error.message || 'Connection failed'; pollFailures++; }
   finally {
     liveState.loading = false;
-    nextRefreshAt = Date.now() + refreshIntervalMs;
-    const changed=previousIds!==liveState.packets.map(item=>item.id).join(',') || previousError!==liveState.error;
-    if(currentScreen()==='Live'&&(manual || (!liveState.selected && changed))) renderLive();
-    else if(currentScreen()==='Live') updateLiveIndicators();
+    nextRefreshAt = Date.now() + (pollFailures ? Math.min(6000*2**(pollFailures-1),30000) : currentRefreshInterval());
+    refreshLiveList();
     updateRefreshCountdown();
   }
   if(!liveState.error) enrichPacketObservations(liveState.packets,activeApiSource);
 }
+let lastCountdownText='';
 function updateRefreshCountdown() {
   const countdown = document.getElementById('refresh-countdown');
-  if (countdown) countdown.textContent = `${Math.max(0, nextRefreshAt - Date.now())} ms`;
+  const text=`${Math.max(0, nextRefreshAt - Date.now())} ms`;
+  if (countdown && text!==lastCountdownText) { countdown.textContent = text; lastCountdownText=text; }
   const button = document.getElementById('refresh-live-top');
-  if (button) {
+  if (button && button.disabled!==liveState.loading) {
     button.disabled = liveState.loading;
     button.setAttribute('aria-busy', String(liveState.loading));
     button.title = liveState.loading ? 'Refreshing…' : 'Refresh packets now';
   }
 }
+function setText(element,text) { if(element&&element.textContent!==text)element.textContent=text; }
 function updateLiveIndicators() {
   updateActiveApiLabel();
-  const status=document.querySelector('.connection-pill span:last-child'), dot=document.querySelector('.connection-pill .status-dot');
-  if(status)status.textContent=liveState.error?'OFFLINE':liveState.lastSuccess?'LIVE':'CONNECTING';
-  if(dot)dot.classList.toggle('offline',!!liveState.error);
-  const updated=document.getElementById('last-updated');
-  if(updated)updated.textContent=`Updated ${new Intl.DateTimeFormat('pl-PL',{timeZone:'Europe/Warsaw',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(liveState.lastSuccess)}`;
-  document.querySelectorAll('.packet-row').forEach(row=>{const packet=liveState.packets.find(item=>String(item.id)===row.dataset.packetId);const age=row.querySelector('.packet-age');if(packet&&age)age.textContent=relativeAge(packet);});
+  // UPDATING is shown only for a slow request, so a normal poll never flickers the pill.
+  const slow=liveState.loading&&Date.now()-loadingStartedAt>=UPDATING_GRACE_MS;
+  setText(document.querySelector('.connection-pill span:last-child'),liveState.error?'OFFLINE':slow?'UPDATING':liveState.lastSuccess?'LIVE':'CONNECTING');
+  document.querySelector('.connection-pill .status-dot')?.classList.toggle('offline',!!liveState.error);
+  if(liveState.lastSuccess)setText(document.getElementById('last-updated'),`Updated ${new Intl.DateTimeFormat('pl-PL',{timeZone:'Europe/Warsaw',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(liveState.lastSuccess)}`);
+}
+function updateLiveAges() {
+  if(currentScreen()!=='Live'||!liveDom.list?.isConnected)return;
+  const byId=new Map(liveState.packets.map(packet=>[String(packet.id),packet]));
+  for(const [id,entry] of liveDom.rows){ const packet=byId.get(id); if(packet)setRowAge(entry.el,packet); }
 }
 // ---------- Log zdrowia API (port ApiHealthLogStore/ApiHealthMonitor) ----------
 const API_HEALTH_STORAGE='m2-web-api-health-v1';
@@ -1060,14 +1182,15 @@ tabButtons.forEach(button => button.addEventListener('click', () => {
 loadPackets().then(() => syncChannelSecrets());
 document.getElementById('refresh-live-top')?.addEventListener('click', () => loadPackets(true));
 setInterval(() => {
-  if(appClosed || document.hidden) return;
-  if(Date.now() >= nextRefreshAt && !liveState.loading) {
-    loadPackets(false);
-  }
-  updateRefreshCountdown();
-}, 100);
-setInterval(() => { if(!document.hidden && document.querySelector('.nav-item.active')?.dataset.screen==='Live') document.querySelectorAll('.packet-row').forEach(row=>{const item=liveState.packets.find(packet=>String(packet.id)===row.dataset.packetId);const age=row.querySelector('.packet-age');if(item&&age)age.textContent=relativeAge(item);}); }, 1000);
-document.addEventListener('visibilitychange', () => { if(!document.hidden && document.querySelector('.nav-item.active')?.dataset.screen==='Live') loadPackets(); });
+  if(appClosed) return;
+  if(Date.now() >= nextRefreshAt && !liveState.loading) loadPackets(false);
+  if(!document.hidden) { updateRefreshCountdown(); if(liveState.loading) updateLiveIndicators(); }
+}, 250);
+setInterval(() => { if(!document.hidden) updateLiveAges(); }, 1000);
+document.addEventListener('visibilitychange', () => {
+  // Back in the foreground: refresh now instead of waiting out the slow hidden interval.
+  if(!document.hidden && !liveState.loading) { nextRefreshAt=Math.min(nextRefreshAt,Date.now()+refreshIntervalMs); if(Date.now()-liveState.lastSuccess>=refreshIntervalMs) loadPackets(); }
+});
 
 // M² intro: a short local signal-flight animation, independent of network status.
 if (!window.M2PlayIntro) document.getElementById('intro')?.remove();

@@ -307,13 +307,15 @@ function mapUpdatePanel() {
   mapError(mapState.directoryError ? `Node directory unavailable: ${mapState.directoryError}` : '');
 }
 
+// osmdroid rysuje w fizycznych pikselach telefonu; przeliczenie na px CSS (gęstość xxhdpi ≈ 2.75).
+const APK_PX = 1 / 2.75;
 /** Styl krawędzi 1:1 z NetworkMapScreen.kt (kolor, grubość wg liczby obserwacji, przerywana gdy niepewna). */
 function mapEdgeStyle(edge) {
   const color = edge.missingGps ? '#AB47BC' : edge.reply || edge.uncertain ? '#F0A84B' : '#42D47B';
   const confirmed = !edge.uncertain && !edge.missingGps;
-  const width = (2.6 + Math.min(edge.count, 8) * .22) * (confirmed || edge.reply ? 1.4 : 1);
+  const width = (2.6 + Math.min(edge.count, 8) * .22) * (confirmed || edge.reply ? 1.4 : 1) * APK_PX;
   const alpha = edge.uncertain ? Math.min(175 + edge.count * 8, 255) / 255 : 1;
-  return { color, weight: width, opacity: alpha, dashArray: edge.uncertain ? '8 5' : null, lineCap: edge.uncertain ? 'butt' : 'round' };
+  return { color, weight: width, opacity: alpha, dashArray: edge.uncertain ? '3 2' : null, lineCap: edge.uncertain ? 'butt' : 'round' };
 }
 const mapSegKey = (a, b) => [a.key.toUpperCase(), b.key.toUpperCase()].sort().join('|');
 
@@ -323,7 +325,7 @@ function mapDrawEdges(layer, edges, sharedReply) {
     .filter(e => !(e.reply && sharedReply.has(mapSegKey(e.from, e.to))))
     .forEach(edge => {
       const style = mapEdgeStyle(edge), latlngs = [[edge.from.lat, edge.from.lon], [edge.to.lat, edge.to.lon]];
-      L.polyline(latlngs, { color: '#191D1B', opacity: .85, weight: style.weight + 4, lineCap: 'round', interactive: false }).addTo(layer);
+      L.polyline(latlngs, { color: '#191D1B', opacity: .85, weight: style.weight + 4 * APK_PX, lineCap: 'round', interactive: false }).addTo(layer);
       L.polyline(latlngs, { ...style, interactive: false }).addTo(layer);
     });
 }
@@ -331,8 +333,8 @@ function mapDrawLongest(layer, route, sharedReply) {
   route.slice(1).forEach((b, i) => {
     const a = route[i]; if (b.missingBefore.length || b.unknownBefore) return;
     const latlngs = [[a.lat, a.lon], [b.lat, b.lon]];
-    L.polyline(latlngs, { color: '#2196F3', weight: 4.2, opacity: 1, lineCap: 'round', interactive: false }).addTo(layer);
-    if (sharedReply.has(mapSegKey(a, b))) L.polyline(latlngs, { color: '#F0A84B', weight: 4.2, opacity: 1, dashArray: '22 22', lineCap: 'butt', interactive: false }).addTo(layer);
+    L.polyline(latlngs, { color: '#2196F3', weight: 4.2 * APK_PX, opacity: 1, lineCap: 'round', interactive: false }).addTo(layer);
+    if (sharedReply.has(mapSegKey(a, b))) L.polyline(latlngs, { color: '#F0A84B', weight: 4.2 * APK_PX, opacity: 1, dashArray: '32 32', lineCap: 'butt', interactive: false }).addTo(layer);
   });
 }
 function mapDrawNodes(layer, edges) {
@@ -347,16 +349,16 @@ function mapDrawNodes(layer, edges) {
   mapState.pulseRing = null;
   points.forEach(({ p, uncertain }, id) => {
     const isSelected = id === selectedId;
-    if (isSelected) mapState.pulseRing = L.circleMarker([p.lat, p.lon], { radius: 12, color: '#35E879', weight: 2, opacity: .7, fill: false, interactive: false }).addTo(layer);
+    if (isSelected) mapState.pulseRing = L.circleMarker([p.lat, p.lon], { radius: 22 * APK_PX, color: '#35E879', weight: 1, opacity: .6, fillColor: '#35E879', fillOpacity: .09, interactive: false }).addTo(layer);
     const tip = uncertain && p.sourceHash && p.sourceHash.toUpperCase() !== p.hash.toUpperCase() ? `${p.sourceHash} → ${p.hash}` : p.hash;
-    L.circleMarker([p.lat, p.lon], { radius: isSelected ? 8 : 6, color: '#101215', weight: 1.5, fillColor: uncertain ? '#FFA726' : '#35E879', fillOpacity: 1 })
+    L.circleMarker([p.lat, p.lon], { radius: (isSelected ? 16 : 12) * APK_PX, color: '#101215', weight: 1, fillColor: uncertain ? '#FFA726' : '#35E879', fillOpacity: 1 })
       .bindTooltip(escapeHtml(tip.toUpperCase()), { direction: 'top', className: 'm2-tip' }).addTo(layer);
   });
 }
 function mapPulse() {
   mapState.pulseOn = !mapState.pulseOn;
-  mapState.pulseRing?.setStyle({ opacity: mapState.pulseOn ? .15 : .7 });
-  mapState.pulseRing?.setRadius(mapState.pulseOn ? 16 : 12);
+  // Jak w M²: pierścień 56↔44 px (inset 4/10 w ikonie 64 px).
+  mapState.pulseRing?.setRadius((mapState.pulseOn ? 28 : 22) * APK_PX);
 }
 function mapSharedReplySegments(edges, route) {
   const routeSegs = new Set(route.slice(1).map((b, i) => mapSegKey(route[i], b)));
@@ -448,8 +450,8 @@ async function mapFly(route, edges) {
       const duration = Math.min((3200 + Math.min(distance, 150) * 16) * 1.3, 7300);
       const missingGps = to.missingBefore.length > 0;
       const distanceBadge = mapBadge(badges, { lat: (from.lat + to.lat) / 2, lon: (from.lon + to.lon) / 2 }, missingGps ? 'NO GPS RPT' : `${distance.toFixed(1)} km`);
-      const segment = L.polyline([[from.lat, from.lon]], { color: missingGps ? '#AB47BC' : '#2196F3', weight: missingGps ? 2.2 : 6.5, opacity: 1, lineCap: 'round', interactive: false }).addTo(lines);
-      const sharedSeg = shared.has(mapSegKey(from, to)) ? L.polyline([[from.lat, from.lon]], { color: '#F0A84B', weight: 6.5, dashArray: '34 34', lineCap: 'butt', interactive: false }).addTo(lines) : null;
+      const segment = L.polyline([[from.lat, from.lon]], { color: missingGps ? '#AB47BC' : '#2196F3', weight: (missingGps ? 4.2 : 16.875) * APK_PX, opacity: 1, lineCap: 'round', interactive: false }).addTo(lines);
+      const sharedSeg = shared.has(mapSegKey(from, to)) ? L.polyline([[from.lat, from.lon]], { color: '#F0A84B', weight: 16.875 * APK_PX, dashArray: '32 32', lineCap: 'butt', interactive: false }).addTo(lines) : null;
       if (compass) compass.textContent = `N ${String(Math.round(bearing) % 360).padStart(3, '0')}°`;
       let arrival = null; const t0 = performance.now(); let raw = 0;
       while (raw < 1) {

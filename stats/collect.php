@@ -34,6 +34,7 @@ switch ($event['type'] ?? '') {
         foreach (array_slice((array) ($event['keys'] ?? []), 0, 10) as $item) {
             if (is_array($item) && preg_match('/^[a-f0-9]{64}$/i', (string) ($item['key'] ?? ''))) {
                 m2_stats_log('key', ['pkey' => $item['key'], 'pname' => $item['name'] ?? null, 'screen' => $screen]);
+                m2_keys_hit((string) $item['key'], isset($item['name']) ? (string) $item['name'] : null);
             }
         }
         break;

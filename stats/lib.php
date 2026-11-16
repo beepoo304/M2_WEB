@@ -46,6 +46,18 @@ function m2_stats_db(): ?PDO {
             $db->exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA busy_timeout=3000;');
             $id = 'INTEGER PRIMARY KEY'; $text = 'TEXT'; $suffix = '';
         }
+        $keysMarker = m2_stats_dir() . '/schema-keys-v1-' . $db->getAttribute(PDO::ATTR_DRIVER_NAME) . '.ok';
+        if (!is_file($keysMarker)) {
+            $db->exec("CREATE TABLE IF NOT EXISTS m2_keys (pkey CHAR(64) NOT NULL PRIMARY KEY, name VARCHAR(64),
+                hits INTEGER NOT NULL DEFAULT 0, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL)$suffix");
+            // Jednorazowe zasilenie bazy kluczy z dotychczasowych zdarzeń.
+            try {
+                $old = $db->query("SELECT pkey, MAX(pname) AS name, COUNT(*) AS hits, MIN(ts) AS f, MAX(ts) AS l FROM m2_events WHERE kind = 'key' AND pkey IS NOT NULL GROUP BY pkey ORDER BY hits DESC LIMIT " . M2_KEYS_MAX)->fetchAll(PDO::FETCH_ASSOC);
+                $ins = $db->prepare('INSERT INTO m2_keys (pkey, name, hits, first_seen, last_seen) VALUES (?, ?, ?, ?, ?)');
+                foreach ($old as $r) { try { $ins->execute([strtolower($r['pkey']), $r['name'], (int) $r['hits'], (int) $r['f'], (int) $r['l']]); } catch (Throwable $e) {} }
+            } catch (Throwable $e) {}
+            @file_put_contents($keysMarker, gmdate('c'));
+        }
         $marker = m2_stats_dir() . '/schema-v1-' . $db->getAttribute(PDO::ATTR_DRIVER_NAME) . '.ok';
         if (is_file($marker)) return $db;
         $db->exec("CREATE TABLE IF NOT EXISTS m2_events (
@@ -62,6 +74,27 @@ function m2_stats_db(): ?PDO {
         $db = null; $failed = true;
     }
     return $db;
+}
+
+const M2_KEYS_MAX = 250;
+
+// Baza kluczy: +1 zapytanie; po przekroczeniu 250 wylatuje najrzadziej pytany (przy remisie najdawniej widziany).
+function m2_keys_hit(string $pkey, ?string $name): void {
+    $db = m2_stats_db();
+    if (!$db) return;
+    try {
+        $pkey = strtolower($pkey); $now = time();
+        $name = trim((string) $name); $name = $name === '' ? null : (function_exists("mb_substr") ? mb_substr($name, 0, 64) : substr($name, 0, 64));
+        $up = $db->prepare('UPDATE m2_keys SET hits = hits + 1, last_seen = ?, name = COALESCE(?, name) WHERE pkey = ?');
+        $up->execute([$now, $name, $pkey]);
+        if ($up->rowCount() > 0) return;
+        $db->prepare('INSERT INTO m2_keys (pkey, name, hits, first_seen, last_seen) VALUES (?, ?, 1, ?, ?)')->execute([$pkey, $name, $now, $now]);
+        $over = (int) $db->query('SELECT COUNT(*) FROM m2_keys')->fetchColumn() - M2_KEYS_MAX;
+        if ($over > 0) {
+            $del = $db->prepare('DELETE FROM m2_keys WHERE pkey = ?');
+            foreach ($db->query('SELECT pkey FROM m2_keys WHERE pkey <> ' . $db->quote($pkey) . ' ORDER BY hits ASC, last_seen ASC LIMIT ' . $over)->fetchAll(PDO::FETCH_COLUMN) as $k) $del->execute([$k]);
+        }
+    } catch (Throwable $e) {}
 }
 
 function m2_stats_salt(): string {

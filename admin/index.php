@@ -14,7 +14,7 @@ const M2_ADMIN_IDLE = 1800;
 const M2_ADMIN_MAX_FAILS = 5;
 const M2_ADMIN_LOCK = 900;
 const M2_ADMIN_SECTIONS = [
-    'tiles' => 'Podsumowanie', 'chart' => 'Wejścia dzień po dniu', 'keys' => 'Najczęściej sprawdzane klucze',
+    'tiles' => 'Podsumowanie', 'chart' => 'Wejścia dzień po dniu', 'keys' => 'Najczęściej sprawdzane klucze', 'keydb' => 'Baza kluczy',
     'countries' => 'Kraje', 'cities' => 'Miasta', 'screens' => 'Zakładki', 'referrers' => 'Skąd przyszli',
     'devices' => 'Urządzenia', 'browsers' => 'Przeglądarki', 'channels' => 'Dodawane kanały publiczne',
     'resources' => 'Zapytania API wg rodzaju', 'sources' => 'Źródła danych API', 'toperrors' => 'Najczęstsze błędy',
@@ -91,8 +91,12 @@ if (($_SERVER['REQUEST_METHOD'] ?? '') === 'POST') {
             $_SESSION['flash'] = ['bad', 'Błędne hasło — nic nie zostało wyczyszczone.'];
         } elseif ($section === 'all') {
             $db->exec('DELETE FROM m2_events');
+            try { $db->exec('DELETE FROM m2_keys'); } catch (Throwable $e) {}
             m2_admin_cuts([]);
             $_SESSION['flash'] = ['ok', 'Wyczyszczono wszystkie statystyki.'];
+        } elseif ($section === 'keydb') {
+            try { $db->exec('DELETE FROM m2_keys'); } catch (Throwable $e) {}
+            $_SESSION['flash'] = ['ok', 'Wyczyszczono bazę kluczy.'];
         } elseif (isset(M2_ADMIN_SECTIONS[$section])) {
             $cuts = m2_admin_cuts();
             $cuts[$section] = time();
@@ -223,6 +227,7 @@ $topKeys = q("SELECT e.pkey, COUNT(DISTINCT e.vid) AS users, COUNT(*) AS session
     (SELECT x.pname FROM m2_events x WHERE x.kind = 'key' AND x.pkey = e.pkey AND x.pname IS NOT NULL AND x.pname <> '' ORDER BY x.ts DESC LIMIT 1) AS name,
     (SELECT COUNT(*) FROM m2_events y WHERE y.kind = 'api' AND y.pkey = e.pkey AND y.ts >= ?) AS lookups
     FROM m2_events e WHERE e.kind = 'key' AND e.ts >= ? GROUP BY e.pkey ORDER BY users DESC, sessions DESC LIMIT 50", [since_for('keys'), since_for('keys')]);
+$keyDb = q('SELECT pkey, name, hits, first_seen, last_seen FROM m2_keys ORDER BY hits DESC, last_seen DESC LIMIT ' . M2_KEYS_MAX);
 $errorWhere = $errFilter === 'api' ? "kind = 'api' AND status >= 400" : ($errFilter === 'js' ? "kind = 'jserror'" : "((kind = 'api' AND status >= 400) OR kind = 'jserror')");
 $errors = q("SELECT ts, kind, screen, resource, status, message, source, country, city, browser, device FROM m2_events WHERE $errorWhere AND ts >= ? ORDER BY ts DESC LIMIT 100", sv('errors'));
 
@@ -235,6 +240,9 @@ if (isset($_GET['export'])) {
     if ($type === 'keys') {
         fputcsv($out, ['klucz', 'nazwa', 'osoby', 'sesje', 'zapytania_api', 'ostatnio'], ';');
         foreach ($topKeys as $r) fputcsv($out, [$r['pkey'], $r['name'], $r['users'], $r['sessions'], $r['lookups'], date('Y-m-d H:i', (int) $r['last'])], ';');
+    } elseif ($type === 'keydb') {
+        fputcsv($out, ['klucz', 'nazwa', 'zapytania', 'pierwszy_raz', 'ostatnio'], ';');
+        foreach ($keyDb as $r) fputcsv($out, [$r['pkey'], $r['name'], $r['hits'], date('Y-m-d H:i', (int) $r['first_seen']), date('Y-m-d H:i', (int) $r['last_seen'])], ';');
     } elseif ($type === 'errors') {
         fputcsv($out, ['czas', 'rodzaj', 'zakladka', 'zasob', 'status', 'komunikat', 'zrodlo', 'kraj', 'miasto', 'przegladarka'], ';');
         foreach ($errors as $r) fputcsv($out, [date('Y-m-d H:i:s', (int) $r['ts']), $r['kind'] === 'api' ? 'API' : 'JS', $r['screen'], $r['resource'], $r['status'], $r['message'], $r['source'], $r['country'], $r['city'], $r['browser']], ';');
@@ -353,6 +361,12 @@ page_start('M² · statystyki'); ?>
     <?php if (!$topKeys): ?><div class="empty">Brak danych</div><?php else: ?>
     <table><tr><th>#</th><th>Nazwa</th><th>Klucz</th><th class="num">Osoby</th><th class="num">Sesje</th><th class="num">Zapytania API</th><th class="num">Ostatnio</th></tr>
     <?php foreach ($topKeys as $i => $r): ?><tr><td><?= $i + 1 ?></td><td><?= h($r['name'] ?: '—') ?></td><td class="key" title="<?= h($r['pkey']) ?>"><?= h(strtoupper(substr($r['pkey'], 0, 4)) . ' · ' . substr($r['pkey'], 0, 12) . '…') ?></td><td class="num"><?= n($r['users']) ?></td><td class="num"><?= n($r['sessions']) ?></td><td class="num"><?= n($r['lookups']) ?></td><td class="num"><?= h(date('d.m H:i', (int) $r['last'])) ?></td></tr><?php endforeach; ?>
+    </table><?php endif; ?></section>
+
+  <section class="card"><?= title('Baza kluczy (' . count($keyDb) . ' / ' . M2_KEYS_MAX . ')', 'keydb', '<a class="btn" href="?p=' . h($period) . '&amp;export=keydb">CSV</a>') ?>
+    <?php if (!$keyDb): ?><div class="empty">Brak danych</div><?php else: ?>
+    <table><tr><th>#</th><th>Nazwa</th><th>Klucz</th><th class="num">Zapytania</th><th class="num">Pierwszy raz</th><th class="num">Ostatnio</th></tr>
+    <?php foreach ($keyDb as $i => $r): ?><tr><td><?= $i + 1 ?></td><td><?= h($r['name'] ?: '—') ?></td><td class="key" title="<?= h($r['pkey']) ?>"><?= h(strtoupper(substr($r['pkey'], 0, 4)) . ' · ' . substr($r['pkey'], 0, 12) . '…') ?></td><td class="num"><?= n($r['hits']) ?></td><td class="num"><?= h(date('d.m.y H:i', (int) $r['first_seen'])) ?></td><td class="num"><?= h(date('d.m H:i', (int) $r['last_seen'])) ?></td></tr><?php endforeach; ?>
     </table><?php endif; ?></section>
 
   <div class="grid">

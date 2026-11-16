@@ -20,3 +20,11 @@ Pełny diagram architektury znajduje się w artefakcie `ARCHITECTURE.md` w katal
 
 ---
 *Zmiany zostały przetestowane – `npm test` zwraca 0 błędów.*
+## Panel administratora — odzyskanie hasła
+
+1. Połącz się przez FTPS z serwerem i wejdź do `httpdoc/stats/data/`.
+2. Utwórz tam plik `nowe-haslo.txt`, a w nim wpisz samo nowe hasło (co najmniej 10 znaków).
+3. Otwórz `https://sn9pj.pzk.pl/admin/`. Panel zamieni hasło na hash (`admin-hash.php`) i sam usunie `nowe-haslo.txt`.
+4. Zaloguj się dotychczasowym loginem i nowym hasłem.
+
+Login jest zapisany w `stats/data/config.php` (`admin_user`). Katalog `stats/data/` jest zablokowany dla przeglądarki (403).

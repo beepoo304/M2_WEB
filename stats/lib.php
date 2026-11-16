@@ -21,6 +21,14 @@ function m2_stats_config(): array {
     if ($config === null) {
         $file = m2_stats_dir() . '/config.php';
         $config = is_file($file) ? (array) (include $file) : [];
+        // Reset hasła przez FTP: plik data/nowe-haslo.txt (min. 10 znaków) zamieniamy na hash i usuwamy.
+        $reset = m2_stats_dir() . '/nowe-haslo.txt';
+        $hashFile = m2_stats_dir() . '/admin-hash.php';
+        if (is_file($reset)) {
+            $password = trim((string) file_get_contents($reset));
+            if (strlen($password) >= 10 && file_put_contents($hashFile, "<?php\nreturn " . var_export(password_hash($password, PASSWORD_DEFAULT), true) . ";\n", LOCK_EX) !== false) @unlink($reset);
+        }
+        if (is_file($hashFile)) $config['admin_hash'] = (string) (include $hashFile);
     }
     return $config;
 }

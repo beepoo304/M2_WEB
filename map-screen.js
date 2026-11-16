@@ -497,7 +497,9 @@ function mapRecDialog(blob, key) {
 }
 /** Klatka lotu jak L.Map.flyTo (_move): setView({animate:false}) robi _resetView, który co klatkę usuwał wszystkie kafelki — mapa znikała spod linii. */
 function mapFlightMove(view, lat, lon, zoom) {
+  const sameZoom = view.getZoom() === zoom;
   view._move(L.latLng(lat, lon), zoom);
+  if (sameZoom) view.fire('zoom');               // _move zgłasza „zoom” tylko przy zmianie — bez tego kafelki i etykiety stały, a linie jechały
   view.fire('zoomend').fire('moveend');
 }
 

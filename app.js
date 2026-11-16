@@ -801,10 +801,14 @@ function enrichNextCandidate() {
   for(const packet of packets){
     const id=String(packet.id);
     if(enrichInFlight.has(id))continue;
-    if(!(Number(packet.observation_count||1)>1 || matchesForPacket(packet).length>0))continue;
+    // Jak M² (collectPacket): pakiet nowy dla sesji mapy jest zawsze kandydatem —
+    // relacje klucza bywają widoczne dopiero w szczegółach obserwacji.
+    if(!(Number(packet.observation_count||1)>1 || matchesForPacket(packet).length>0 || (typeof mapCandidate==='function'&&mapCandidate(packet))))continue;
     const cached=observationMatchCache.get(id);
     if(!cached || (!cached.failedAt && cached.observationCount!==Number(packet.observation_count||1))) return packet;
-    if(!stale && now-(cached.failedAt||cached.checkedAt)>=OBSERVATION_CACHE_MS) stale=packet;
+    // Kandydat sesji mapy po błędzie pobrania próbuje szybciej (5 s zamiast 30 s).
+    const staleAfter=mapCandidate(packet)&&cached&&cached.failedAt?5e3:OBSERVATION_CACHE_MS;
+    if(!stale && now-(cached.failedAt||cached.checkedAt)>=staleAfter) stale=packet;
   }
   return stale;
 }

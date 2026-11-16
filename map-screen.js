@@ -72,12 +72,29 @@ function mapClearPending(key) {
 
 /** Jak M² (NetworkMapViewModel.collectPacket): tylko trasy z załadowanych
  *  szczegółów obserwacji. Bez fallbacku do surowej ścieżki pakietu — pakiet
- *  bez detali jest pomijany i ponowniebrany przy kolejnym odświeżeniu. */
+ *  bez detali jest pomijany i ponowniebrany przy kolejnym odświeżeniu.
+ *  Detale muszą odpowiadać bieżącemu licznikowi obserwacji (nie wchłaniamy
+ *  starej migawki z cache — to był wyścig, którego APK nie ma). */
 function mapRoutesForPacket(packet) {
   const cached = observationMatchCache.get(String(packet.id));
   if (!cached?.data?.loadSucceeded) return null;
+  if (Number(cached.observationCount || 0) !== Number(packet.observation_count || 1)) return null;
   return observationRoutes(cached.data)
     .map(r => ({ path: r.path.map(h => String(h).trim().toUpperCase()), resolved: r.resolved, observerId: String(r.observer.observer_id || '') }));
+}
+
+/** Jak M² (collectPacket): pakiet nowy dla bieżącej sesji mapy jest zawsze
+ *  kandydatem na pobranie szczegółów obserwacji — niezależnie od licznika
+ *  obserwacji i dopasowań na poziomie pakietu (relacje klucza bywają widoczne
+ *  dopiero w detalach obserwacji). */
+function mapCandidate(packet) {
+  if (!mapState.running || !mapState.key) return false;
+  const ident = packetIdentity(packet);
+  const count = Number(packet.observation_count || 1);
+  const baseCount = mapState.baselineCounts ? (mapState.baselineCounts.get(ident) || 0) : 0;
+  const procCount = mapState.processedCounts ? (mapState.processedCounts.get(ident) || 0) : 0;
+  const isNew = !mapState.baselineCounts || !mapState.baselineCounts.has(ident) || count > baseCount;
+  return isNew && procCount < count;
 }
 
 /** Wywoływane po każdym odświeżeniu Live i po pobraniu szczegółów obserwacji. */

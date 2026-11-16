@@ -981,6 +981,11 @@ function renderApiLogDialog() {
 // saved list, tracked device keys with counters, export location, about.
 const settingsUi={ apiMenu:false, addApi:false, newApi:'', apiError:false, url:'', showKey:false, keyError:false, key:'', exportDir:null };
 M2Export.ready.then(()=>{settingsUi.exportDir=M2Export.dir;});
+// Wielkość tekstu jak skala czcionki w Androidzie (100–175%); mapa (Leaflet) nie jest skalowana.
+const TEXT_SCALE_STORAGE='m2-web-text-scale';
+let textScale=1;
+function applyTextScale(value){textScale=Math.min(1.75,Math.max(1,Number(value)||1));document.documentElement.style.setProperty('--m2-text-scale',textScale);try{textScale===1?localStorage.removeItem(TEXT_SCALE_STORAGE):localStorage.setItem(TEXT_SCALE_STORAGE,String(textScale));}catch{}}
+try{applyTextScale(localStorage.getItem(TEXT_SCALE_STORAGE)||1);}catch{}
 // Toast jak Toast.makeText w APK.
 function showSettingsToast(text){document.querySelector('.m2-toast')?.remove();const t=document.createElement('div');t.className='m2-toast';t.textContent=text;document.body.appendChild(t);setTimeout(()=>t.remove(),2200);}
 const TRASH_ICON='<svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path fill="currentColor" d="M16 9v10H8V9h8m-1.5-6h-5l-1 1H5v2h14V4h-3.5l-1-1zM18 7H6v12c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7z"/></svg>';
@@ -1005,6 +1010,9 @@ function renderSettings() {
     <label class="settings-field settings-input ${settingsUi.keyError?'invalid':''}"><span class="settings-field-label">64-character public key</span><input id="tracked-key" type="${settingsUi.showKey?'text':'password'}" autocomplete="off" spellcheck="false" value="${escapeHtml(settingsUi.key)}"><button type="button" class="text-button" id="toggle-key">${settingsUi.showKey?'Hide':'Show'}</button></label>
     <button type="button" class="settings-button" id="add-tracked-key">Add device</button>
     <div class="settings-devices">${devices}</div>
+    <hr class="settings-divider">
+    <b class="settings-title">TEXT SIZE</b>
+    <div class="settings-text-size"><input id="text-size" type="range" min="100" max="175" step="5" value="${Math.round(textScale*100)}" aria-label="Text size"><b id="text-size-value">${Math.round(textScale*100)}%</b>${textScale!==1?'<button type="button" class="text-button" id="text-size-default">Default</button>':''}</div>
     <hr class="settings-divider">
     <b class="settings-title">EXPORT LOCATION</b>
     <p class="settings-muted">DEFAULT: Downloads (browser)</p>
@@ -1054,6 +1062,9 @@ function renderSettings() {
   document.getElementById('api-log-close')?.addEventListener('click',()=>{ settingsApiLogOpen=false; rerender(); });
   document.getElementById('api-log-backdrop')?.addEventListener('click',event=>{ if(event.target===event.currentTarget){ settingsApiLogOpen=false; rerender(); } });
   document.getElementById('api-log-reset')?.addEventListener('click',()=>{ resetApiHealthLog(activeApiSource); rerender(); });
+  document.getElementById('text-size')?.addEventListener('input',event=>{applyTextScale(Number(event.target.value)/100);document.getElementById('text-size-value').textContent=`${event.target.value}%`;});
+  document.getElementById('text-size')?.addEventListener('change',()=>rerender());
+  document.getElementById('text-size-default')?.addEventListener('click',()=>{applyTextScale(1);rerender();});
   document.getElementById('export-choose')?.addEventListener('click',async()=>{try{settingsUi.exportDir=await M2Export.choose();rerender();}catch{}});
   document.getElementById('export-default')?.addEventListener('click',()=>{settingsUi.exportDir=null;rerender();});
   document.getElementById('export-save')?.addEventListener('click',async()=>{await M2Export.save(settingsUi.exportDir);showSettingsToast('Export location saved');});

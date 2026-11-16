@@ -222,6 +222,7 @@ function mapRender() {
       <div id="map-message" class="m2-map-message"></div>
     </div>
     <button type="button" id="map-fs" class="m2-fs-button" title="Fullscreen" aria-label="Fullscreen">${MAP_FS_ICON}</button>
+    <div class="m2-zoom" role="group" aria-label="Zoom"><button type="button" id="map-zoom-in" title="Zoom in" aria-label="Zoom in">+</button><button type="button" id="map-zoom-out" title="Zoom out" aria-label="Zoom out">−</button></div>
     <button type="button" id="map-fs-exit" class="m2-fs-exit" title="Exit fullscreen" aria-label="Exit fullscreen">${MAP_FS_EXIT_ICON}</button>
     <img class="m2-fs-logo" src="assets/m2-logo.svg" alt="M²">
     <div id="map-compass" class="m2-compass" hidden>N 000°</div>
@@ -242,6 +243,8 @@ function mapRender() {
   document.getElementById('map-export').addEventListener('click', mapExportFile);
   document.getElementById('map-import').addEventListener('click', mapImportDialog);
   document.getElementById('map-fs').addEventListener('click', () => mapSetFullscreen(true));
+  document.getElementById('map-zoom-in').addEventListener('click', () => mapState.view?.zoomIn());
+  document.getElementById('map-zoom-out').addEventListener('click', () => mapState.view?.zoomOut());
   document.getElementById('map-fs-exit').addEventListener('click', () => mapSetFullscreen(false));
   mapUpdatePanel();
   if (typeof L === 'undefined') { mapError('The map library failed to load.'); return; }
@@ -653,3 +656,11 @@ function mapImportDialog() {
 }
 
 mapLoadSession();
+
+// Klawisze +/− na ekranie mapy (praca touchpadem/padem bez pinch).
+document.addEventListener('keydown', e => {
+  if (!mapState.view || !document.getElementById('map-canvas') || mapState.flight || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.closest?.('input, textarea, select, [contenteditable]')) return;
+  if (e.key === '+' || e.key === '=') { e.preventDefault(); mapState.view.zoomIn(); }
+  else if (e.key === '-' || e.key === '_') { e.preventDefault(); mapState.view.zoomOut(); }
+});

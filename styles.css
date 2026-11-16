@@ -592,3 +592,15 @@ body.map-fs-on #map-canvas .leaflet-bottom { bottom:0; }
 .settings-button.outlined { background:none; color:var(--primary); border:1px solid var(--outline); }
 .settings-button:disabled { opacity:.45; cursor:default; }
 .m2-toast { position:fixed; left:50%; bottom:calc(110px + env(safe-area-inset-bottom)); transform:translateX(-50%); z-index:3000; max-width:calc(100% - 32px); padding:10px 18px; border-radius:20px; background:#2c3135; color:var(--on-surface); font:13px "Segoe UI",system-ui,sans-serif; box-shadow:0 4px 14px #0006; }
+.m2-zoom { position:absolute; z-index:550; top:78px; right:14px; display:flex; flex-direction:column; width:52px; border-radius:10px; overflow:hidden; background:#202327a0; }
+.m2-zoom button { height:48px; border:0; background:none; color:#fff; font:400 28px/1 "Segoe UI",system-ui,sans-serif; cursor:pointer; }
+.m2-zoom button+button { border-top:1px solid #ffffff2a; }
+.m2-zoom button:hover { background:#ffffff1a; }
+.m2-map.fs .m2-zoom { display:none; }
+/* Text size: zoom treści ekranów (poza mapą), paneli mapy, dialogów i dolnego paska. */
+#screen > section:not(.m2-map), .map-panel, .dialog, .node-info-dialog, .packet-detail, .m2-toast, .nav-item { zoom:var(--m2-text-scale,1); }
+.settings-text-size { display:flex; align-items:center; gap:12px; margin:8px 0; }
+.settings-text-size input { flex:1; max-width:320px; accent-color:var(--primary); }
+.settings-text-size b { min-width:46px; color:var(--primary); font-size:14px; }
+.settings-text-size { flex-wrap:wrap; } .settings-text-size input { min-width:0; }
+@media (max-width:640px) { .m2-zoom { top:auto; bottom:calc(158px + env(safe-area-inset-bottom)); } }

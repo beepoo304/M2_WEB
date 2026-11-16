@@ -13,14 +13,8 @@ const MY_LOG_STORAGE = 'm2-web-own-traffic-log-v1';
 const CHANNEL_STORAGE = 'm2-web-channels-v1';
 const ACTIVE_TAB_STORAGE = 'm2-web-active-tab-v1';
 const API_STORAGE = 'm2-web-api-sources-v1';
-const REFRESH_STORAGE = 'm2-web-refresh-interval-v1';
-const REFRESH_OPTIONS = [
-  ...Array.from({length:8},(_,i)=>(i+3)*1000),
-  ...Array.from({length:9},(_,i)=>(i+3)*5000),
-  ...Array.from({length:59},(_,i)=>(i+1)*60000),
-  60*60000
-];
-let refreshIntervalMs = loadRefreshInterval();
+// TrafficRefreshPolicy: 3 s in the foreground (also while tracking), 30 s in the background.
+const refreshIntervalMs = 3_000;
 let nextRefreshAt = Date.now() + refreshIntervalMs;
 let trackedKeys = loadTrackedKeys();
 let myLogPackets = loadMyLogPackets();
@@ -44,14 +38,6 @@ function packetTime(packet) {
   if (Number.isNaN(date.getTime())) return '--:--:--';
   return new Intl.DateTimeFormat('pl-PL', { timeZone:'Europe/Warsaw', hour:'2-digit', minute:'2-digit', second:'2-digit' }).format(date);
 }
-function relativeAge(packet) {
-  const stamp = new Date(packet.timestamp || packet.first_seen).getTime();
-  if (!Number.isFinite(stamp)) return 'time unavailable';
-  const seconds = Math.max(0, Math.floor((Date.now() - stamp) / 1000));
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s ago`;
-  return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m ago`;
-}
 function packetSummary(packet) {
   const decoded = parseDecoded(packet), type = Number(packet.payload_type);
   if (type === 5) { const channel=String(decoded.channel||'').trim()||'Private channel', text=String(decoded.text||'').trim(); return text ? `${channel} · ${decoded.text}` : `${channel} · Message content unavailable`; }
@@ -63,25 +49,6 @@ function packetSummary(packet) {
   if (type === 3) return 'Acknowledgement';
   if (type === 11) return 'Control packet';
   return `${packet.raw_hex ? packet.raw_hex.length / 2 : 0} B`;
-}
-function packetFlagsMarkup(packet) {
-  const decoded = parseDecoded(packet);
-  const entries = [];
-  const add = (label, value) => {
-    if (value == null || value === false || value === '') return;
-    const text = typeof value === 'boolean' ? label : `${label}: ${String(value)}`;
-    if (!entries.includes(text)) entries.push(text);
-  };
-  const flags = decoded.flags ?? packet.flags;
-  if (Array.isArray(flags)) flags.forEach(flag => add(String(flag).toUpperCase(), true));
-  else if (flags && typeof flags === 'object') {
-    Object.entries(flags).forEach(([name, value]) => add(name.replace(/([A-Z])/g, ' $1').toUpperCase(), value));
-  }
-  add('ROUTE TYPE', packet.route_type ?? decoded.route_type ?? decoded.routeType);
-  add('PAYLOAD VERSION', packet.payload_version ?? decoded.payload_version ?? decoded.payloadVersion);
-  add('DIRECTION', packet.direction);
-  if (!entries.length) return '';
-  return `<span class="packet-flags">${entries.map(flag => `<b>${escapeHtml(flag)}</b>`).join('')}</span>`;
 }
 function liveIdentityLabel(packet) {
   const decoded=parseDecoded(packet), flags=decoded.flags||{};
@@ -121,12 +88,6 @@ function packetPath(packet) {
   // M² keeps every API path entry intact. In particular, adjacent 1-byte
   // entries must never be merged: doing so corrupts a trace route.
   return raw.map(hop=>String(hop??'').trim().toUpperCase());
-}
-function pathSummary(packet) {
-  const path = packetPath(packet);
-  if (!path.length) return 'direct';
-  if (path.some(hop => String(hop).length === 2)) return '1-byte route';
-  return `${path.length} hops`;
 }
 function keyName(key) { return trackedKeys.find(item=>item.key.toLowerCase()===String(key||'').toLowerCase())?.name || `${String(key||'').slice(0,4).toUpperCase()}…`; }
 function reliableHash(value) { const text=String(value||'').trim();return text.length>=4&&text.length<=64&&text.length%2===0&&/^[a-f\d]+$/i.test(text); }
@@ -517,16 +478,6 @@ function loadApiSources() {
   return ['https://mc.inside.net.pl', 'https://live.meshcorekk.xyz', 'https://analyzer.marwoj.net'];
 }
 function saveApiSources() { sessionStorage.setItem(API_STORAGE,JSON.stringify(apiSources)); }
-function loadRefreshInterval() {
-  try { const saved=Number(sessionStorage.getItem(REFRESH_STORAGE));if(REFRESH_OPTIONS.includes(saved))return saved; } catch {}
-  return 3000;
-}
-function formatRefreshInterval(value) {
-  if(value<60000)return `${value/1000} seconds`;
-  if(value===3600000)return '1 hour';
-  const minutes=value/60000;
-  return `${minutes} minute${minutes===1?'':'s'}`;
-}
 function sourceLabel(source) { try{return new URL(source).host;}catch{return source;} }
 function apiProxyUrl(resource, params={}, source=activeApiSource) {
   const query=new URLSearchParams({resource,...params,source});
@@ -606,11 +557,13 @@ function liveRowHtml(packet) {
   if(packet._rowMemo===memo&&packet._rowHtml)return packet._rowHtml;
   const relations=enhancedMatches(packet), matches=relations, accent=packetAccent(packet,relations);
   const preview=packetSummary(packet);
+  // LiveLogScreen row: time · type, identity, 1 byte, detail, NO GPS, tracked-key labels.
+  const oneByte=packetPath(packet).some(hop=>String(hop).length===2&&/^[a-f\d]{2}$/i.test(String(hop)));
+  const labels=relationLabels(matches).map(match=>`<span class="row-match"><b class="${match.relation===trackedRelations.reply?'reply':''}">${escapeHtml(match.label)}</b>${match.relation===trackedRelations.reply&&replyHasNoRoute(packet,match.key)?'<b class="no-route">  NO ROUTE</b>':''}</span>`).join('');
   const html=`<button class="packet-row ${accent}" data-packet-id="${escapeHtml(packet.id)}" type="button">
-      <span class="packet-time"><b>${packetTime(packet)}</b><small class="packet-age"></small></span>
-      <span class="packet-type type-${Number(packet.payload_type)}">${escapeHtml(packetType(packet))}<small>${escapeHtml((packet.direction || 'rx').toUpperCase())}</small></span>
-      <span class="packet-copy"><strong>${liveIdentityMarkup(packet)}</strong>${packetFlagsMarkup(packet)}${packetPath(packet).some(hop=>String(hop).length===2&&/^[a-f\d]{2}$/i.test(String(hop)))?'<small class="one-byte-marker">1 byte</small>':''}<span>${renderTrackedText(preview)}</span><small>${escapeHtml(packet.observer_iata || 'Observer')} · ${Number(packet.observation_count || 1)} observation${Number(packet.observation_count || 1) === 1 ? '' : 's'}</small>${missingGpsHashes(packet).map(hash=>`<b class="no-gps">NO GPS FOR ${escapeHtml(hash)}</b>`).join('')}${matches.length?`<span class="key-match-list">${relationLabels(matches).map(match=>`<b class="${match.relation===trackedRelations.reply?'reply':''}" title="${escapeHtml(keyName(match.key))}">${escapeHtml(match.label)}</b>${match.relation===trackedRelations.reply&&replyHasNoRoute(packet,match.key)?'<b class="no-route">NO ROUTE</b>':''}`).join('')}</span>`:''}</span>
-      <span class="packet-route">${escapeHtml(pathSummary(packet))}<small>${packet.rssi == null ? '' : `${escapeHtml(packet.rssi)} dBm`}</small></span>
+      <span class="row-head"><b class="packet-time">${packetTime(packet)}</b><span class="packet-type">${escapeHtml(packetType(packet))}</span></span>
+      <strong class="row-identity">${liveIdentityMarkup(packet)}</strong>${oneByte?'<small class="one-byte-marker">1 byte</small>':''}
+      <span class="row-detail">${renderTrackedText(preview)}</span>${missingGpsHashes(packet).map(hash=>`<small class="no-gps">NO GPS FOR ${escapeHtml(hash)}</small>`).join('')}${labels?`<span class="row-matches">${labels}</span>`:''}
     </button>`;
   packet._rowMemo=memo; packet._rowHtml=html;
   return html;
@@ -619,8 +572,7 @@ function liveRowElement(html) { const template=document.createElement('template'
 function ensureLiveShell() {
   if(liveDom.list?.isConnected)return false;
   screen.innerHTML = `<section class="live-screen">
-    <div class="live-heading"><div><div class="eyebrow">MESHCORE NETWORK</div><h1>Live packets</h1><p>Packets observed across the public MeshCore feed.</p></div></div>
-    <div class="live-meta"><span class="live-count"></span><span id="last-updated"></span></div>
+    <div class="live-log-head"><div><b>LIVE LOG</b><small class="live-count"></small></div><button type="button" class="live-status" id="live-status" title="Refresh"><span class="live-status-icon" aria-hidden="true">↻</span><span class="live-status-text"></span></button></div>
     <div class="feed-error-host"></div>
     <div class="packet-list"></div>
   </section><div id="live-detail-host"></div>`;
@@ -644,8 +596,8 @@ function patchLiveList() {
     const id=String(packet.id); keep.add(id);
     const html=liveRowHtml(packet);
     let entry=liveDom.rows.get(id);
-    if(!entry){ entry={html,el:liveRowElement(html)}; liveDom.rows.set(id,entry); setRowAge(entry.el,packet); }
-    else if(entry.html!==html){ const el=liveRowElement(html); if(entry.el.isConnected)entry.el.replaceWith(el); entry.el=el; entry.html=html; setRowAge(el,packet); }
+    if(!entry){ entry={html,el:liveRowElement(html)}; liveDom.rows.set(id,entry); }
+    else if(entry.html!==html){ const el=liveRowElement(html); if(entry.el.isConnected)entry.el.replaceWith(el); entry.el=el; entry.html=html; }
     const expected=previous?previous.nextElementSibling:list.firstElementChild;
     if(expected!==entry.el)list.insertBefore(entry.el,expected);
     previous=entry.el;
@@ -653,9 +605,8 @@ function patchLiveList() {
   for(const [id,entry] of liveDom.rows) if(!keep.has(id)){ entry.el.remove(); liveDom.rows.delete(id); }
   if(anchor){ const row=liveDom.rows.get(anchor.id)?.el; if(row?.isConnected){ const delta=row.getBoundingClientRect().top-anchor.top; if(Math.abs(delta)>=1)window.scrollBy(0,delta); } }
 }
-function setRowAge(row,packet) { const age=row.querySelector('.packet-age'); if(age){ const text=relativeAge(packet); if(age.textContent!==text)age.textContent=text; } }
 function updateLiveMeta() {
-  const count=screen.querySelector('.live-count'); if(count)count.textContent=`${liveState.packets.length} / 250 packets`;
+  setText(screen.querySelector('.live-count'),`Newest first · ${liveState.packets.length} / 250`);
   const host=screen.querySelector('.feed-error-host');
   if(host){ const html=liveState.error?`<div class="feed-error"><strong>Feed temporarily unavailable</strong><span>${escapeHtml(liveState.error)}</span></div>`:''; if(host.dataset.html!==html){host.innerHTML=html;host.dataset.html=html;} }
 }
@@ -687,6 +638,7 @@ function handleLiveClick(event) {
     liveState.details=null; liveState.detailsError=''; liveState.showAllRoutes=false;
     loadPacketDetails(liveState.selected,renderLiveDetail); return;
   }
+  if(target.closest('#live-status')){ loadPackets(true); return; }
   if(target.closest('.detail-close, .detail-close-secondary')){ closeDetail(); return; }
   if(target.closest('.route-toggle')){ liveState.showAllRoutes=!liveState.showAllRoutes; renderLiveDetail(); return; }
   if(target.classList.contains('packet-detail-backdrop')){ closeDetail(); return; }
@@ -898,7 +850,6 @@ async function enrichPacketObservations(packets, source) {
 async function loadPackets(manual = false) {
   if (liveState.loading || appClosed) return;
   liveState.loading = true; loadingStartedAt = Date.now();
-  if(manual) updateRefreshCountdown();
   try {
     let lastError=null, result=null;
     for(const source of pollSourceOrder()){
@@ -928,35 +879,17 @@ async function loadPackets(manual = false) {
     liveState.loading = false;
     nextRefreshAt = Date.now() + (pollFailures ? Math.min(6000*2**(pollFailures-1),30000) : currentRefreshInterval());
     refreshLiveList();
-    updateRefreshCountdown();
   }
   if(!liveState.error) enrichPacketObservations(liveState.packets,activeApiSource);
 }
-let lastCountdownText='';
-function updateRefreshCountdown() {
-  const countdown = document.getElementById('refresh-countdown');
-  const text=`${Math.max(0, nextRefreshAt - Date.now())} ms`;
-  if (countdown && text!==lastCountdownText) { countdown.textContent = text; lastCountdownText=text; }
-  const button = document.getElementById('refresh-live-top');
-  if (button && button.disabled!==liveState.loading) {
-    button.disabled = liveState.loading;
-    button.setAttribute('aria-busy', String(liveState.loading));
-    button.title = liveState.loading ? 'Refreshing…' : 'Refresh packets now';
-  }
-}
 function setText(element,text) { if(element&&element.textContent!==text)element.textContent=text; }
 function updateLiveIndicators() {
-  updateActiveApiLabel();
-  // UPDATING is shown only for a slow request, so a normal poll never flickers the pill.
-  const slow=liveState.loading&&Date.now()-loadingStartedAt>=UPDATING_GRACE_MS;
-  setText(document.querySelector('.connection-pill span:last-child'),liveState.error?'OFFLINE':slow?'UPDATING':liveState.lastSuccess?'LIVE':'CONNECTING');
-  document.querySelector('.connection-pill .status-dot')?.classList.toggle('offline',!!liveState.error);
-  if(liveState.lastSuccess)setText(document.getElementById('last-updated'),`Updated ${new Intl.DateTimeFormat('pl-PL',{timeZone:'Europe/Warsaw',hour:'2-digit',minute:'2-digit',second:'2-digit'}).format(liveState.lastSuccess)}`);
-}
-function updateLiveAges() {
-  if(currentScreen()!=='Live'||!liveDom.list?.isConnected)return;
-  const byId=new Map(liveState.packets.map(packet=>[String(packet.id),packet]));
-  for(const [id,entry] of liveDom.rows){ const packet=byId.get(id); if(packet)setRowAge(entry.el,packet); }
+  // M² LIVE LOG header: Connected (spinning), Connecting after 6 s without data, Error.
+  const status=document.getElementById('live-status'); if(!status)return;
+  const stale=!liveState.lastSuccess||(liveState.loading&&Date.now()-loadingStartedAt>=UPDATING_GRACE_MS);
+  const state=liveState.error?'error':stale?'connecting':'connected';
+  if(status.dataset.state!==state){ status.dataset.state=state; setText(status.querySelector('.live-status-text'),state==='error'?'Error':state==='connecting'?'Connecting':'Connected'); }
+  status.disabled=liveState.loading;
 }
 // ---------- Log zdrowia API (port ApiHealthLogStore/ApiHealthMonitor) ----------
 // Only outages are logged, per broker URL, newest 250, kept across restarts.
@@ -1039,7 +972,7 @@ function renderApiLogDialog() {
   return `<div class="dialog-backdrop" id="api-log-backdrop"><section class="dialog" role="dialog" aria-modal="true" aria-label="Live API log"><h3>LIVE API LOG</h3><p class="api-log-base">${escapeHtml(activeApiSource)}</p><p class="api-log-status ${status[0]}">${status[1]}</p><p class="api-log-note">Checked every 60 seconds · every 15 seconds during an outage</p><div class="api-log-list">${rows||'<div class="empty-feed">No API outages recorded</div>'}</div><div class="dialog-actions"><button type="button" class="danger-link" id="api-log-reset">RESET LOG</button><button type="button" class="dialog-cancel" id="api-log-close">Close</button></div></section></div>`;
 }
 function renderSettings() {
-  screen.innerHTML = `<section class="settings-screen"><div class="eyebrow">PERSONALIZE M²</div><h1>Settings</h1><section class="api-settings"><div class="settings-heading"><h2>Packet APIs</h2><button type="button" id="open-api-log">Log</button></div><p class="settings-intro">The app tries these APIs in order. If the first one is unavailable, it switches automatically to the next working source.</p><div class="api-source-list">${apiSources.map((source,index)=>`<div class="api-source-row"><span class="api-order">${index+1}</span><code>${escapeHtml(source)}</code>${source===activeApiSource?'<b class="api-active-badge">ACTIVE</b>':''}<button type="button" data-primary-api="${index}" ${index===0?'disabled':''}>Make primary</button>${apiSources.length>1?`<button type="button" data-remove-api="${index}" aria-label="Remove API ${escapeHtml(source)}">Remove</button>`:''}</div>`).join('')}</div><div class="api-add-form"><label for="api-source-input">Add API base URL</label><div><input id="api-source-input" type="url" autocomplete="url" placeholder="https://api.example.org"><button id="add-api-source" type="button">Add API</button></div><p id="api-source-error" class="form-error" role="status" aria-live="polite"></p></div></section><section class="refresh-settings"><h2>Live refresh interval</h2><p class="settings-intro">Choose how often the packet feed is checked. The countdown next to LIVE follows this interval.</p><label for="refresh-interval">Refresh every</label><select id="refresh-interval">${REFRESH_OPTIONS.map(value=>`<option value="${value}" ${value===refreshIntervalMs?'selected':''}>${formatRefreshInterval(value)}</option>`).join('')}</select></section><section class="tracked-settings"><h2>Tracked keys</h2><p class="settings-intro">Add a full public key to recognize it in packet sources, observers and recorded routes.</p><div class="key-form"><label>Public key · 64 hex characters<input id="tracked-key" autocomplete="off" spellcheck="false" placeholder="Paste the full public key" maxlength="64"></label><button class="add-key-button" id="add-tracked-key" type="button">Add key</button><div id="key-form-error" class="form-error" role="status" aria-live="polite"></div></div><div class="key-storage-note"><span>SESSION ONLY</span> Keys and names are kept only for this browser session. Packet counts below use the loaded feed (${liveState.packets.length} of 250 packets).</div><div class="tracked-key-list"><div class="keys-heading"><strong>Saved keys</strong><span>${trackedKeys.length}</span></div>${trackedKeys.length?trackedKeys.map((item,index)=>`<div class="tracked-key-row"><div><strong>${escapeHtml(item.name||'Name unavailable')}</strong><code>${escapeHtml(item.key)}</code><small class="tracked-packet-count">${packetCountForTrackedKey(item.key)} matching packets in loaded feed</small></div><button type="button" data-remove-key="${index}" aria-label="Remove ${escapeHtml(item.name||'key')}">Remove</button></div>`).join(''):'<div class="empty-keys">No tracked keys yet.</div>'}</div></section><section class="about-settings"><h2>About M²</h2><p class="settings-intro">Exports (my log, maps) are saved to your browser's download folder. Channel keys never leave this browser.</p><a class="settings-link" href="https://ko-fi.com/beepoo304" target="_blank" rel="noopener noreferrer">Support M² on Ko-fi — ko-fi.com/beepoo304</a><a class="settings-link" href="https://github.com/beepoo304/M2_WEB" target="_blank" rel="noopener noreferrer">Open source on GitHub — github.com/beepoo304/M2_WEB</a><p class="version-note">M² Web version 0.3.0</p><button type="button" id="close-application" class="danger-button">Close application</button><p class="settings-intro">Stops background listening and closes M².</p></section></section>${settingsApiLogOpen?renderApiLogDialog():''}`;
+  screen.innerHTML = `<section class="settings-screen"><div class="eyebrow">PERSONALIZE M²</div><h1>Settings</h1><section class="api-settings"><div class="settings-heading"><h2>Packet APIs</h2><button type="button" id="open-api-log">Log</button></div><p class="settings-intro">The app tries these APIs in order. If the first one is unavailable, it switches automatically to the next working source.</p><div class="api-source-list">${apiSources.map((source,index)=>`<div class="api-source-row"><span class="api-order">${index+1}</span><code>${escapeHtml(source)}</code>${source===activeApiSource?'<b class="api-active-badge">ACTIVE</b>':''}<button type="button" data-primary-api="${index}" ${index===0?'disabled':''}>Make primary</button>${apiSources.length>1?`<button type="button" data-remove-api="${index}" aria-label="Remove API ${escapeHtml(source)}">Remove</button>`:''}</div>`).join('')}</div><div class="api-add-form"><label for="api-source-input">Add API base URL</label><div><input id="api-source-input" type="url" autocomplete="url" placeholder="https://api.example.org"><button id="add-api-source" type="button">Add API</button></div><p id="api-source-error" class="form-error" role="status" aria-live="polite"></p></div></section><section class="tracked-settings"><h2>Tracked keys</h2><p class="settings-intro">Add a full public key to recognize it in packet sources, observers and recorded routes.</p><div class="key-form"><label>Public key · 64 hex characters<input id="tracked-key" autocomplete="off" spellcheck="false" placeholder="Paste the full public key" maxlength="64"></label><button class="add-key-button" id="add-tracked-key" type="button">Add key</button><div id="key-form-error" class="form-error" role="status" aria-live="polite"></div></div><div class="key-storage-note"><span>SESSION ONLY</span> Keys and names are kept only for this browser session. Packet counts below use the loaded feed (${liveState.packets.length} of 250 packets).</div><div class="tracked-key-list"><div class="keys-heading"><strong>Saved keys</strong><span>${trackedKeys.length}</span></div>${trackedKeys.length?trackedKeys.map((item,index)=>`<div class="tracked-key-row"><div><strong>${escapeHtml(item.name||'Name unavailable')}</strong><code>${escapeHtml(item.key)}</code><small class="tracked-packet-count">${packetCountForTrackedKey(item.key)} matching packets in loaded feed</small></div><button type="button" data-remove-key="${index}" aria-label="Remove ${escapeHtml(item.name||'key')}">Remove</button></div>`).join(''):'<div class="empty-keys">No tracked keys yet.</div>'}</div></section><section class="about-settings"><h2>About M²</h2><p class="settings-intro">Exports (my log, maps) are saved to your browser's download folder. Channel keys never leave this browser.</p><a class="settings-link" href="https://ko-fi.com/beepoo304" target="_blank" rel="noopener noreferrer">Support M² on Ko-fi — ko-fi.com/beepoo304</a><a class="settings-link" href="https://github.com/beepoo304/M2_WEB" target="_blank" rel="noopener noreferrer">Open source on GitHub — github.com/beepoo304/M2_WEB</a><p class="version-note">M² Web version 0.3.0</p><button type="button" id="close-application" class="danger-button">Close application</button><p class="settings-intro">Stops background listening and closes M².</p></section></section>${settingsApiLogOpen?renderApiLogDialog():''}`;
   screen.querySelector('.key-storage-note').lastChild.textContent=' Keys, start dates and packet counters are kept only for this browser session.';
   screen.querySelectorAll('.tracked-packet-count').forEach((element,index)=>{
     const item=trackedKeys[index];
@@ -1050,7 +983,6 @@ function renderSettings() {
     element.addEventListener('click',()=>openNodeInfo(trackedKeys[index]));
     element.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault();openNodeInfo(trackedKeys[index]);}});
   });
-  document.getElementById('refresh-interval').addEventListener('change',event=>{refreshIntervalMs=Number(event.target.value);sessionStorage.setItem(REFRESH_STORAGE,String(refreshIntervalMs));nextRefreshAt=Date.now()+refreshIntervalMs;updateRefreshCountdown();});
   document.getElementById('add-api-source').addEventListener('click',()=>{const input=document.getElementById('api-source-input'),error=document.getElementById('api-source-error'),source=normalizeApiSource(input.value);if(!source){error.textContent='Enter a valid HTTPS API base URL.';return;}if(apiSources.includes(source)){error.textContent='This API is already in the list.';return;}apiSources.push(source);saveApiSources();renderSettings();loadPackets(true);});
   screen.querySelectorAll('[data-primary-api]').forEach(button=>button.addEventListener('click',()=>{const index=Number(button.dataset.primaryApi);apiSources=[apiSources[index],...apiSources.filter((_,i)=>i!==index)];saveApiSources();activeApiSource=apiSources[0];updateActiveApiLabel();renderSettings();loadPackets(true);}));
   screen.querySelectorAll('[data-remove-api]').forEach(button=>button.addEventListener('click',()=>{apiSources.splice(Number(button.dataset.removeApi),1);saveApiSources();if(!apiSources.includes(activeApiSource)){activeApiSource=apiSources[0];updateActiveApiLabel();}renderSettings();loadPackets(true);}));
@@ -1299,7 +1231,7 @@ function renderPlaceholder(name) {
   screen.innerHTML = `<section class="welcome-panel"><div class="eyebrow">${escapeHtml(name.toUpperCase())}</div><h1>${escapeHtml(name)}</h1><p>${escapeHtml(descriptions[name])}</p></section>`;
 }
 function currentScreen() { return document.querySelector('.nav-item.active')?.dataset.screen || 'Live'; }
-function renderScreen(name) { document.body.classList.toggle('map-fullscreen',name==='Map'); if(name!=='Map'&&typeof leaveMap==='function')leaveMap(); if(name==='Live')renderLive();else if(name==='My log')renderMyLog();else if(name==='Channels')renderChannels();else if(name==='Map')renderMap();else if(name==='Settings')renderSettings();else if(name==='Guide')renderGuide();else renderPlaceholder(name); }
+function renderScreen(name) { document.body.classList.toggle('map-fullscreen',name==='Map'); document.body.classList.toggle('live-active',name==='Live'); if(name!=='Map'&&typeof leaveMap==='function')leaveMap(); if(name==='Live')renderLive();else if(name==='My log')renderMyLog();else if(name==='Channels')renderChannels();else if(name==='Map')renderMap();else if(name==='Settings')renderSettings();else if(name==='Guide')renderGuide();else renderPlaceholder(name); }
 const allowedScreens=tabButtons.map(button=>button.dataset.screen);
 let initialScreen='Live';try{const saved=sessionStorage.getItem(ACTIVE_TAB_STORAGE);if(allowedScreens.includes(saved))initialScreen=saved;}catch{}
 tabButtons.forEach(item=>{const active=item.dataset.screen===initialScreen;item.classList.toggle('active',active);if(active)item.setAttribute('aria-current','page');else item.removeAttribute('aria-current');});
@@ -1311,13 +1243,11 @@ tabButtons.forEach(button => button.addEventListener('click', () => {
   renderScreen(name);
 }));
 loadPackets().then(() => syncChannelSecrets());
-document.getElementById('refresh-live-top')?.addEventListener('click', () => loadPackets(true));
 setInterval(() => {
   if(appClosed) return;
   if(Date.now() >= nextRefreshAt && !liveState.loading) loadPackets(false);
-  if(!document.hidden) { updateRefreshCountdown(); if(liveState.loading) updateLiveIndicators(); }
+  if(!document.hidden && liveState.loading) updateLiveIndicators();
 }, 250);
-setInterval(() => { if(!document.hidden) updateLiveAges(); }, 1000);
 document.addEventListener('visibilitychange', () => {
   // Back in the foreground: refresh now instead of waiting out the slow hidden interval.
   if(!document.hidden && !liveState.loading) { nextRefreshAt=Math.min(nextRefreshAt,Date.now()+refreshIntervalMs); if(Date.now()-liveState.lastSuccess>=refreshIntervalMs) loadPackets(); }

@@ -1,3 +1,5 @@
+// Wydanie z GitHuba (tag M2_WEB) — aktualizować razem z package.json przy każdym release.
+const M2_WEB_RELEASE = { version: '0.4.1', date: '16.11.2026' };
 const tabButtons = [...document.querySelectorAll('.nav-item')];
 const screen = document.getElementById('screen');
 const liveState = { packets: [], loading: false, error: '', lastSuccess: 0, selected: null, details: null, detailsLoading: false, detailsError: '', selectedChannel: '', showAllRoutes: false };
@@ -1022,7 +1024,7 @@ function renderSettings() {
     <hr class="settings-divider">
     <a class="settings-kofi" href="https://ko-fi.com/beepoo304" target="_blank" rel="noopener noreferrer"><b>Support M2 on Ko-fi</b><span>ko-fi.com/beepoo304</span></a>
     <hr class="settings-divider flush">
-    <p class="settings-muted settings-version">M² version 0.1.14 (72)</p>
+    <p class="settings-muted settings-version">M² Web ${M2_WEB_RELEASE.version} · ${M2_WEB_RELEASE.date}</p>
     <p class="settings-muted settings-gh">Open source on GitHub</p>
     <a class="settings-gh-link" href="https://github.com/beepoo304/M2" target="_blank" rel="noopener noreferrer">github.com/beepoo304/M2</a>
     <button type="button" id="close-application" class="settings-close-app">Close application</button>

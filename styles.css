@@ -532,7 +532,7 @@ select.m2-select option { background:#1d2023; color:var(--on-surface); }
 body.map-fs-on .bottom-nav { display:none; }
 body.map-fs-on #map-canvas .leaflet-bottom { bottom:0; }
 .m2-compass { position:absolute; z-index:560; top:14px; left:14px; padding:8px 12px; border-radius:10px; background:#15181cee; color:#fff; font:700 15px "Roboto Mono",Consolas,monospace; }
-.m2-flight-badge-wrap { background:none; border:0; }
+.m2-flight-badge-wrap { background:none; border:0; will-change:transform; }
 .m2-flight-badge { position:absolute; left:0; top:0; transform:translate(-50%,calc(-50% - (var(--anchor) - .5) * 34px)); padding:6px 10px; border-radius:10px; background:#181b20d9; color:#fff; font:700 13px/1.2 Roboto,system-ui,sans-serif; white-space:nowrap; pointer-events:none; }
 .m2-map .map-legend { display:none; }
 @media (max-width:640px) {

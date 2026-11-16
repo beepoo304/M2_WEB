@@ -400,7 +400,13 @@ function mapBearing(a, b) {
 }
 function mapBadge(layer, point, text, anchor = 1.35) {
   const icon = L.divIcon({ className: 'm2-flight-badge-wrap', html: `<div class="m2-flight-badge" style="--anchor:${anchor}">${escapeHtml(text)}</div>`, iconSize: [0, 0] });
-  return L.marker([point.lat, point.lon], { icon, interactive: false, keyboard: false, zIndexOffset: 1000 }).addTo(layer);
+  const marker = L.marker([point.lat, point.lon], { icon, interactive: false, keyboard: false, zIndexOffset: 1000 });
+  // Leaflet Marker.update zaokrągla pozycję do pełnych px — przy ułamkowym zoomie lotu opisy i km drżały względem linii.
+  marker.update = function () {
+    if (this._icon && this._map) this._setPos(this._map.latLngToLayerPoint(this._latlng));
+    return this;
+  };
+  return marker.addTo(layer);
 }
 function mapFade(markers, ms = 500) {
   markers.filter(Boolean).forEach(m => { const el = m.getElement()?.firstChild; if (el) { el.style.transition = `opacity ${ms}ms`; el.style.opacity = '0'; } });

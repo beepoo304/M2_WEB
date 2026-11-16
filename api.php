@@ -14,6 +14,7 @@ register_shutdown_function(static function () use ($m2StatsStart): void {
     ob_end_flush();
     if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
     if (!is_file(__DIR__ . '/stats/lib.php')) return;
+    if (isset($_GET['probe'])) return;   // sprawdzanie dostępności zapisanych API (jak ApiHealthMonitor w M²) — nie liczy się do statystyk
     require_once __DIR__ . '/stats/lib.php';
     $resource = (string) ($_GET['resource'] ?? '');
     // Odpytywanie co kilka sekund: zapisujemy próbkę z wagą, błędy zawsze.

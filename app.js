@@ -935,7 +935,7 @@ function resetApiHealthLog(source) { apiHealthLog[apiHealthBase(source)]=[]; sav
 async function probeApiHealth(source) {
   const base=apiHealthBase(source), started=Date.now();
   try {
-    const data=await fetchJson(apiProxyUrl('packets',{limit:'1',_:String(started)},source));
+    const data=await fetchJson(apiProxyUrl('packets',{limit:'1',probe:'1',_:String(started)},source));
     if(!Array.isArray(data.packets))throw new Error('Missing packets array');
     recordApiHealth(source,true,started);
   } catch { recordApiHealth(source,false,started); }

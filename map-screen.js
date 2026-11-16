@@ -410,7 +410,7 @@ function mapCancelFlight(keepRecording) {
   if (!keepRecording) mapRecCancel();
   if (!mapState.flight) return;
   mapState.flight.cancelled = true; mapState.flight = null;
-  if (mapState.view) mapState.view.options.zoomSnap = 1;
+  if (mapState.view) { mapState.view.options.zoomSnap = 1; mapSmooth(mapState.view, false); }
   cancelAnimationFrame(mapState.flightFrame);
   mapState.flightLayer?.clearLayers();
   const compass = document.getElementById('map-compass'); if (compass) compass.hidden = true;
@@ -496,7 +496,27 @@ function mapRecDialog(blob, key) {
   document.body.appendChild(box);
 }
 /** Klatka lotu jak L.Map.flyTo (_move): setView({animate:false}) robi _resetView, który co klatkę usuwał wszystkie kafelki — mapa znikała spod linii. */
+/** Płynny lot: Leaflet co klatkę zaokrągla pozycję mapy i kafelków do pełnych px, a zoom jest ułamkowy — obraz drżał.
+ *  Na czas lotu pozycje liczone bez zaokrąglania (sub-pikselowo, jak osmdroid). */
+function mapSmooth(view, on) {
+  if (!view) return;
+  if (on) {
+    view._getNewPixelOrigin = function (center, zoom) {
+      return this.project(center, zoom)._subtract(this.getSize()._divideBy(2))._add(this._getMapPanePos());
+    };
+  } else delete view._getNewPixelOrigin;
+  view.eachLayer(layer => {
+    if (!(layer instanceof L.GridLayer)) return;
+    if (on) layer._setZoomTransform = mapSmoothZoomTransform; else delete layer._setZoomTransform;
+  });
+}
+function mapSmoothZoomTransform(level, center, zoom) {
+  const scale = this._map.getZoomScale(zoom, level.zoom);
+  const translate = level.origin.multiplyBy(scale).subtract(this._map._getNewPixelOrigin(center, zoom));
+  if (L.Browser.any3d) L.DomUtil.setTransform(level.el, translate, scale); else L.DomUtil.setPosition(level.el, translate);
+}
 function mapFlightMove(view, lat, lon, zoom) {
+  if (!view.hasOwnProperty('_getNewPixelOrigin')) mapSmooth(view, true);
   const sameZoom = view.getZoom() === zoom;
   view._move(L.latLng(lat, lon), zoom);
   if (sameZoom) view.fire('zoom');               // _move zgłasza „zoom” tylko przy zmianie — bez tego kafelki i etykiety stały, a linie jechały
@@ -560,7 +580,7 @@ async function mapFly(route, edges, onFinished) {
     await sleep(4000); if (!alive()) return;
     await sleep(250); if (!alive()) return;
     onFinished?.();
-    mapState.flight = null;
+    mapState.flight = null; mapSmooth(view, false);
     if (compass) compass.hidden = true;
     badges.clearLayers(); updateMapView();
   } finally {

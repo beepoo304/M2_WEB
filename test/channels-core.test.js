@@ -45,7 +45,7 @@ test('wrong MAC is rejected', async () => {
 });
 
 test('parseChannel accepts public, named and private keys', async () => {
-  assert.deepEqual(await M2Channels.parseChannel('PUBLIC'), { name: 'public', hash: 'public', secret: '', isPrivate: false });
+  assert.deepEqual(await M2Channels.parseChannel('PUBLIC'), { name: 'Public', hash: 'Public', secret: '', isPrivate: false });
   const named = await M2Channels.parseChannel('#test');
   assert.equal(named.name, '#test');
   assert.equal(named.hash, 'D9');

@@ -185,7 +185,7 @@
   async function parseChannel(value) {
     const input = String(value || '').trim();
     if (!input) return null;
-    if (/^public$/i.test(input)) return { name: 'public', hash: 'public', secret: '', isPrivate: false };
+    if (/^public$/i.test(input)) return { name: 'Public', hash: 'Public', secret: '', isPrivate: false };
     if (/^meshcore:\/\/channel\/add/i.test(input)) {
       try {
         const url = new URL(input);

@@ -1,5 +1,5 @@
 // Wydanie z GitHuba (tag M2_WEB) — aktualizować razem z package.json przy każdym release.
-const M2_WEB_RELEASE = { version: '0.5.2', date: '16.11.2026' };
+const M2_WEB_RELEASE = { version: '0.5.3', date: '23.11.2026' };
 const tabButtons = [...document.querySelectorAll('.nav-item')];
 const screen = document.getElementById('screen');
 const liveState = { packets: [], loading: false, error: '', lastSuccess: 0, selected: null, details: null, detailsLoading: false, detailsError: '', selectedChannel: '', showAllRoutes: false };

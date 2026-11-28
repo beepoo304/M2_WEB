@@ -16,7 +16,7 @@ const M2_ADMIN_LOCK = 900;
 const M2_ADMIN_SECTIONS = [
     'tiles' => 'Podsumowanie', 'chart' => 'Wejścia dzień po dniu', 'keys' => 'Najczęściej sprawdzane klucze', 'keydb' => 'Baza kluczy',
     'countries' => 'Kraje', 'cities' => 'Miasta', 'channels' => 'Dodawane kanały publiczne',
-    'sources' => 'Źródła danych API', 'toperrors' => 'Najczęstsze błędy',
+    'sources' => 'Źródła danych API',
     'errors' => 'Ostatnie błędy',
 ];
 
@@ -162,7 +162,10 @@ td.key { font-family:"Roboto Mono",Consolas,monospace; font-size:12px; color:var
 td.msg { color:var(--orange); overflow-wrap:anywhere; min-width:200px; }
 .bar { height:6px; background:var(--primary); border-radius:3px; opacity:.75; }
 .empty { color:var(--muted); padding:8px 0; }
-.chart svg { width:100%; height:180px; display:block; }
+.chart svg { width:100%; height:96px; display:block; }
+.tile.live b { color:var(--primary); }
+.tile.live .live-dot { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--primary); margin-left:5px; vertical-align:middle; box-shadow:0 0 0 0 rgba(66,212,123,.5); animation:livepulse 1.8s infinite; }
+@keyframes livepulse { 0%{box-shadow:0 0 0 0 rgba(66,212,123,.5);} 70%{box-shadow:0 0 0 6px rgba(66,212,123,0);} 100%{box-shadow:0 0 0 0 rgba(66,212,123,0);} }
 .legend { color:var(--muted); font-size:12px; margin-top:4px; }
 .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin:0 4px 0 12px; vertical-align:-1px; }
 .login { max-width:360px; margin:12vh auto; background:var(--surface); border:1px solid var(--outline); border-radius:14px; padding:24px; }
@@ -275,6 +278,8 @@ $tiles += [
 ];
 $apiErrors = (int) one("SELECT COUNT(*) FROM m2_events WHERE kind = 'api' AND status >= 400 AND ts >= ?", sv('tiles'));
 $jsErrors = (int) one("SELECT COUNT(*) FROM m2_events WHERE kind = 'jserror' AND ts >= ?", sv('tiles'));
+// „Aktywni teraz” — unikalni odwiedzający (bez botów) z ostatnich 10 minut; niezależne od wybranego zakresu, odświeża się przy przeładowaniu strony.
+$activeNow = (int) one("SELECT COUNT(DISTINCT vid) FROM m2_events WHERE $human AND ts >= ?", [time() - 600]);
 
 $chartDays = $period === '0' ? M2_STATS_RETENTION_DAYS : max(7, (int) $period);
 $daily = [];
@@ -291,9 +296,6 @@ $channels = q("SELECT pname AS label, COUNT(*) AS c FROM m2_events WHERE kind = 
 $sources = q("SELECT COALESCE(source,'?') AS source, SUM(weight) AS total, SUM(CASE WHEN status >= 400 THEN weight ELSE 0 END) AS bad,
     SUM(CASE WHEN status < 400 THEN ms*weight ELSE 0 END)*1.0/NULLIF(SUM(CASE WHEN status < 400 THEN weight ELSE 0 END),0) AS avgms,
     MAX(CASE WHEN status < 400 THEN ms END) AS maxms FROM m2_events WHERE kind = 'api' AND ts >= ? GROUP BY source ORDER BY total DESC", sv('sources'));
-// „Minuty” = w ilu różnych minutach błąd wystąpił: setki wpisów w kilku minutach to jedna awaria, a nie setki problemów.
-$topErrors = q("SELECT message AS label, COALESCE(source,'?') AS source, COUNT(*) AS c, COUNT(DISTINCT ts - ts % 60) AS minutes, MIN(ts) AS first, MAX(ts) AS last
-    FROM m2_events WHERE $errorWhere AND ts >= ? GROUP BY message, source ORDER BY c DESC LIMIT 10", sv('toperrors'));
 
 function ranking(array $rows, string $empty = 'Brak danych', ?callable $label = null): string {
     if (!$rows) return '<div class="empty">' . h($empty) . '</div>';
@@ -310,7 +312,7 @@ function flag(string $country): string {
     return '&#' . (0x1F1E6 + ord($country[0]) - 65) . ';&#' . (0x1F1E6 + ord($country[1]) - 65) . '; ';
 }
 function chart(array $daily): string {
-    $w = 900; $hgt = 180; $pad = 22; $count = count($daily);
+    $w = 900; $hgt = 96; $pad = 22; $count = count($daily);
     $max = max(1, ...array_map(static fn($d) => max($d['visits'], $d['unique'], $d['errors']), array_values($daily)));
     $slot = ($w - $pad) / $count; $bar = max(2, $slot * .38);
     $svg = '<svg viewBox="0 0 ' . $w . ' ' . $hgt . '" preserveAspectRatio="none" role="img" aria-label="Wejścia dzień po dniu">';
@@ -356,6 +358,7 @@ page_start('M² · statystyki'); ?>
   <?php if ($flash): ?><div class="flash <?= h($flash[0]) ?>"><?= h($flash[1]) ?></div><?php endif; ?>
   <div class="sechead"><?= title('Podsumowanie', 'tiles') ?></div>
   <div class="tiles">
+    <div class="tile live" title="Unikalni odwiedzający z ostatnich 10 minut (bez botów). Odświeża się przy przeładowaniu strony."><small>Aktywni teraz<span class="live-dot"></span></small><b><?= n($activeNow) ?></b></div>
     <?php foreach ($tiles as $label => $value): ?><div class="tile"><small><?= h($label) ?></small><b><?= is_numeric($value) ? n($value) : h($value) ?></b></div><?php endforeach; ?>
     <div class="tile <?= $apiErrors ? 'bad' : '' ?>"><small>Błędy API</small><b><?= n($apiErrors) ?></b></div>
     <div class="tile <?= $jsErrors ? 'bad' : '' ?>"><small>Błędy w przeglądarce</small><b><?= n($jsErrors) ?></b></div>
@@ -388,12 +391,6 @@ page_start('M² · statystyki'); ?>
     <?php foreach ($sources as $r): $pct = (float) $r['total'] ? 100 * (float) $r['bad'] / (float) $r['total'] : 0; ?>
       <tr><td><?= h($r['source']) ?></td><td class="num"><?= n($r['total']) ?></td><td class="num"><?= n($r['bad']) ?></td><td class="num" style="color:<?= $pct > 5 ? 'var(--red)' : 'inherit' ?>"><?= number_format($pct, 1, ',', ' ') ?>%</td><td class="num"><?= n($r['avgms']) ?> ms</td><td class="num"><?= n($r['maxms']) ?> ms</td></tr>
     <?php endforeach; ?></table><?php endif; ?></section>
-
-  <section class="card"><?= title('Najczęstsze błędy', 'toperrors') ?>
-    <?php if (!$topErrors): ?><div class="empty">Brak błędów</div><?php else: ?>
-    <table><tr><th>Komunikat</th><th>Źródło</th><th class="num">Wpisy</th><th class="num" title="W ilu różnych minutach wystąpił błąd — seria wpisów w kilku minutach to jedna awaria">Minuty</th><th class="num">Pierwszy</th><th class="num">Ostatni</th></tr>
-    <?php foreach ($topErrors as $r): ?><tr><td class="msg"><?= h($r['label'] ?: '—') ?></td><td><?= h($r['source']) ?></td><td class="num"><?= n($r['c']) ?></td><td class="num"><?= n($r['minutes']) ?></td><td class="num"><?= h(date('d.m H:i', (int) $r['first'])) ?></td><td class="num"><?= h(date('d.m H:i', (int) $r['last'])) ?></td></tr><?php endforeach; ?>
-    </table><?php endif; ?></section>
 
   <section class="card"><?= title('Ostatnie błędy', 'errors', '<a class="btn" href="?p=' . h($period) . '&amp;err=' . h($errFilter) . '&amp;export=errors">CSV</a>') ?>
     <div class="filters"><?php foreach (['all' => 'Wszystkie', 'api' => 'API', 'js' => 'Przeglądarka'] as $key => $label): ?><a href="?p=<?= h($period) ?>&amp;err=<?= $key ?>" class="<?= $key === $errFilter ? 'on' : '' ?>"><?= $label ?></a><?php endforeach; ?></div>

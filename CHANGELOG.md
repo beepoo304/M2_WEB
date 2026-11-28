@@ -1,5 +1,12 @@
 # ChangeLog
 
+## [0.5.5] - 2026-11-28
+### Changed
+- Panel /admin: wykres „Wejścia dzień po dniu” zmniejszony (mniej dominujący).
+- Panel /admin: nowy kafelek „Aktywni teraz” — unikalni odwiedzający (bez botów) z ostatnich 10 minut.
+- Panel /admin: usunięta sekcja „Najczęstsze błędy” (tabela „Ostatnie błędy” zostaje).
+
+
 ## [0.5.4] - 2026-11-28
 ### Fixed
 - Statystyki: wejście i klucz liczone raz na sesję karty (sessionStorage), odświeżenie strony nie jest nowym wejściem.

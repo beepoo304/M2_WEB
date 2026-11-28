@@ -325,6 +325,9 @@ body.map-fullscreen .screen { position:relative; width:100%; max-width:none; mar
 .dialog-actions { display:flex; justify-content:flex-end; gap:8px; margin-top:18px; }
 .dialog-confirm { border:1px solid #67d78a55; border-radius:10px; padding:11px 16px; background:#67d78a1a; color:var(--primary); font-weight:700; cursor:pointer; }
 .dialog-cancel { border:1px solid var(--outline); border-radius:10px; padding:11px 16px; background:var(--surface-variant); color:var(--on-surface); cursor:pointer; }
+.dialog-langbar { display:flex; justify-content:flex-end; margin:-6px 0 8px; }
+.dialog-langbar select, .settings-field select { border:1px solid var(--outline); border-radius:10px; padding:10px 12px; color:var(--on-surface); background:var(--surface); font:14px "Segoe UI",system-ui,sans-serif; cursor:pointer; }
+.settings-field select { width:100%; }
 
 /* ===== Channels: pełny port ===== */
 .channel-view-head { display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin-bottom:8px; }

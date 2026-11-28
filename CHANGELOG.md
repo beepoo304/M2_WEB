@@ -1,5 +1,14 @@
 # ChangeLog
 
+## [0.5.7] - 2026-11-28
+### Added
+- Kopia ustawień: eksport i import (klucze, kanały, API, Mapper API) w zakładce Settings; plik M2_DATA_<data-godzina>.json.
+- Monit po intro „Wczytać ustawienia z pliku?” — tylko gdy przeglądarka pusta, raz na sesję.
+- Przełącznik języka (PL/EN/RU/SK/CZ/DE/FR) w monicie i w Settings; monit w ustawionym języku.
+### Changed
+- Domyślny język interfejsu to EN.
+
+
 ## [0.5.6] - 2026-11-28
 ### Changed
 - Panel /admin: wykres zmieniony na trzy cienkie linie (wejścia, unikalni, błędy) zamiast słupków.

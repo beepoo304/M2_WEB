@@ -1,5 +1,5 @@
 // Wydanie z GitHuba (tag M2_WEB) — aktualizować razem z package.json przy każdym release.
-const M2_WEB_RELEASE = { version: '0.5.6', date: '28.11.2026' };
+const M2_WEB_RELEASE = { version: '0.5.7', date: '28.11.2026' };
 const tabButtons = [...document.querySelectorAll('.nav-item')];
 const screen = document.getElementById('screen');
 const liveState = { packets: [], loading: false, error: '', lastSuccess: 0, selected: null, details: null, detailsLoading: false, detailsError: '', selectedChannel: '', showAllRoutes: false };
@@ -1000,6 +1000,98 @@ function deviceCounterStart(value) {
   const date=new Date(Number(value)||0), pad=n=>String(n).padStart(2,'0');
   return `${date.getFullYear()}-${pad(date.getMonth()+1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
+// ---------- Kopia ustawień: eksport/import (klucze, kanały, API, Mapper API) ----------
+function buildBackup() {
+  return {
+    app:'M2 Web', kind:'m2-web-settings', version:1,
+    exportedAt:new Date().toISOString(), appVersion:M2_WEB_RELEASE.version,
+    trackedKeys:trackedKeys.map(k=>({ key:k.key, name:k.name||'', counterStartedAt:k.counterStartedAt||Date.now(), packetCount:k.packetCount||0 })),
+    channels:savedChannels.slice(0,50).map(c=>({ name:c.name, hash:c.hash, secret:c.secret, isPrivate:!!c.isPrivate })),
+    apiSources:[...apiSources], activeApi:activeApiSource,
+    mapperApi:M2Mapper.api()!==M2Mapper.DEFAULT_API ? M2Mapper.api() : null
+  };
+}
+async function exportBackup() {
+  const stamp=new Date().toISOString().slice(0,16).replace('T','_').replace(/:/g,'-');
+  const name=`M2_DATA_${stamp}.json`;
+  try {
+    const where=await M2Export.write(name, new Blob([JSON.stringify(buildBackup(),null,2)],{type:'application/json'}));
+    showSettingsToast(`${name} → ${where}`);
+  } catch { showSettingsToast('Nie udało się zapisać pliku'); }
+}
+function applyBackup(data) {
+  if(!data||typeof data!=='object'||(data.kind&&data.kind!=='m2-web-settings')){ showSettingsToast('To nie jest plik ustawień M2'); return false; }
+  let keys=0, chans=0, apis=0;
+  for(const item of (Array.isArray(data.trackedKeys)?data.trackedKeys:[])){
+    const key=String(item?.key||'').trim().toUpperCase();
+    if(!/^[A-F0-9]{64}$/.test(key)) continue;
+    if(trackedKeys.some(k=>k.key.toLowerCase()===key.toLowerCase())) continue;
+    const obj={ key, name:String(item?.name||'').trim(), counterStartedAt:Number(item?.counterStartedAt)||Date.now(), packetCount:Number(item?.packetCount)||0, seenPacketIds:[] };
+    trackedKeys.push(obj); keys++; if(!obj.name) resolveTrackedKeyName(obj);
+  }
+  if(keys) saveTrackedKeys();
+  for(const item of (Array.isArray(data.channels)?data.channels:[])){
+    const name=String(item?.name||'').trim(); if(!name) continue;
+    const secret=String(item?.secret||'');
+    if(savedChannels.some(c=>c.name===name&&(c.secret||'')===secret)) continue;
+    const ch=migrateChannel(item); ch.loaded=false; savedChannels.unshift(ch); chans++;
+  }
+  if(chans){ if(savedChannels.length>50) savedChannels.length=50; saveChannels(); }
+  for(const raw of (Array.isArray(data.apiSources)?data.apiSources:[])){
+    const src=normalizeApiSource(raw);
+    if(src&&!apiSources.includes(src)){ apiSources.push(src); apis++; }
+  }
+  if(apis) saveApiSources();
+  if(typeof data.mapperApi==='string'&&data.mapperApi.trim()) M2Mapper.setApi(data.mapperApi.trim());
+  try { syncChannelSecrets(); } catch {}
+  showSettingsToast(`Zaimportowano: ${keys} kluczy, ${chans} kanałów, ${apis} API`);
+  return true;
+}
+function importBackupFile(after) {
+  const input=document.createElement('input');
+  input.type='file'; input.accept='application/json,.json';
+  input.addEventListener('change', async()=>{
+    const file=input.files?.[0]; if(!file) return;
+    try { const data=JSON.parse(await file.text()); if(applyBackup(data)&&typeof after==='function') after(); }
+    catch { showSettingsToast('Nie udało się odczytać pliku'); }
+  });
+  input.click();
+}
+
+// Monit po intro — treść w ustawionym języku (domyślnie EN).
+const IMPORT_PROMPT_I18N = {
+  PL:{ title:'Wczytać ustawienia z pliku?', body:'Masz kopię ustawień (klucze, kanały, API)? Wczytaj ją jednym kliknięciem.<br>Nie masz pliku? Wprowadź dane w <b>Settings</b> i kliknij <b>Eksportuj</b> — następnym razem wczytasz je tutaj.', yes:'Wczytaj z pliku', no:'Nie teraz' },
+  EN:{ title:'Load settings from a file?', body:'Have a settings backup (keys, channels, API)? Load it in one click.<br>No file yet? Enter your data in <b>Settings</b> and click <b>Export</b> — next time you can load it here.', yes:'Load from file', no:'Not now' },
+  RU:{ title:'Загрузить настройки из файла?', body:'Есть резервная копия настроек (ключи, каналы, API)? Загрузите её одним кликом.<br>Нет файла? Введите данные в <b>Settings</b> и нажмите <b>Export</b> — в следующий раз загрузите отсюда.', yes:'Загрузить из файла', no:'Не сейчас' },
+  SK:{ title:'Načítať nastavenia zo súboru?', body:'Máte zálohu nastavení (kľúče, kanály, API)? Načítajte ju jedným kliknutím.<br>Nemáte súbor? Zadajte údaje v <b>Settings</b> a kliknite <b>Export</b> — nabudúce ich načítate tu.', yes:'Načítať zo súboru', no:'Teraz nie' },
+  CZ:{ title:'Načíst nastavení ze souboru?', body:'Máte zálohu nastavení (klíče, kanály, API)? Načtěte ji jedním kliknutím.<br>Nemáte soubor? Zadejte údaje v <b>Settings</b> a klikněte <b>Export</b> — příště je načtete zde.', yes:'Načíst ze souboru', no:'Teď ne' },
+  DE:{ title:'Einstellungen aus Datei laden?', body:'Haben Sie eine Sicherung (Schlüssel, Kanäle, API)? Laden Sie sie mit einem Klick.<br>Keine Datei? Daten in <b>Settings</b> eingeben und <b>Export</b> klicken — beim nächsten Mal hier laden.', yes:'Aus Datei laden', no:'Jetzt nicht' },
+  FR:{ title:'Charger les paramètres depuis un fichier ?', body:'Vous avez une sauvegarde (clés, canaux, API) ? Chargez-la en un clic.<br>Pas de fichier ? Saisissez vos données dans <b>Settings</b> et cliquez sur <b>Export</b> — la prochaine fois, chargez-les ici.', yes:'Charger le fichier', no:'Pas maintenant' }
+};
+function renderImportPrompt() {
+  const lang = typeof guideLanguage==='function' ? guideLanguage() : 'EN';
+  const t = IMPORT_PROMPT_I18N[lang] || IMPORT_PROMPT_I18N.EN;
+  const langs = typeof GUIDE_LANGS!=='undefined' ? GUIDE_LANGS : ['EN'];
+  document.getElementById('import-prompt-backdrop')?.remove();
+  const wrap=document.createElement('div');
+  wrap.className='dialog-backdrop'; wrap.id='import-prompt-backdrop';
+  wrap.innerHTML=`<section class="dialog" role="dialog" aria-modal="true" aria-label="${escapeHtml(t.title)}">`
+    +`<div class="dialog-langbar"><select id="import-prompt-lang" aria-label="Language">${langs.map(c=>`<option value="${c}" ${c===lang?'selected':''}>${c==='SK'?'SLO':c}</option>`).join('')}</select></div>`
+    +`<h3>${escapeHtml(t.title)}</h3><p class="dialog-note">${t.body}</p>`
+    +`<div class="dialog-actions"><button type="button" class="dialog-cancel" id="import-prompt-no">${escapeHtml(t.no)}</button><button type="button" class="dialog-confirm" id="import-prompt-yes">${escapeHtml(t.yes)}</button></div></section>`;
+  document.body.appendChild(wrap);
+  const close=()=>wrap.remove();
+  document.getElementById('import-prompt-lang').addEventListener('change',event=>{ try{localStorage.setItem(GUIDE_LANG_STORAGE,event.target.value);}catch{} renderImportPrompt(); if(currentScreen()==='Guide')renderGuide(); });
+  document.getElementById('import-prompt-no').addEventListener('click',close);
+  wrap.addEventListener('click',event=>{ if(event.target===wrap)close(); });
+  document.getElementById('import-prompt-yes').addEventListener('click',()=>{ close(); importBackupFile(()=>renderScreen(currentScreen())); });
+}
+function maybeShowImportPrompt() {
+  if(trackedKeys.length||savedChannels.length) return;              // tylko gdy przeglądarka pusta
+  try { if(sessionStorage.getItem('m2-web-import-prompt-shown'))return; sessionStorage.setItem('m2-web-import-prompt-shown','1'); } catch {}
+  renderImportPrompt();
+}
+
 function renderSettings() {
   if(!settingsUi.url)settingsUi.url=activeApiSource;
   const menu=settingsUi.apiMenu?`<div class="settings-api-menu" role="listbox">${apiSources.map((address,index)=>{const locked=address===activeApiSource||PROTECTED_APIS.includes(address);return `<div class="settings-api-option"><button type="button" data-pick-api="${index}">${escapeHtml(address)}</button><button type="button" class="icon-delete" data-remove-api="${index}" ${locked?'disabled':''} aria-label="${locked?'Protected API':'Delete API'}" title="${locked?'Protected API':'Delete API'}">${TRASH_ICON}</button></div>`;}).join('')}<hr><button type="button" class="settings-api-add" id="settings-api-add">Add API…</button></div>`:'';
@@ -1029,6 +1121,13 @@ function renderSettings() {
     <b class="settings-title">MAPPER API</b>
     <label class="settings-field settings-input"><span class="settings-field-label">Coverage map API (Mapper button on the map)</span><input id="mapper-api" type="url" autocomplete="off" spellcheck="false" value="${escapeHtml(settingsUi.mapperApi??M2Mapper.api())}"></label>
     <div class="settings-export-actions"><button type="button" class="settings-button" id="mapper-api-save">Save</button>${(settingsUi.mapperApi??M2Mapper.api())!==M2Mapper.DEFAULT_API?'<button type="button" class="text-button" id="mapper-api-default">Default</button>':''}</div>
+    <hr class="settings-divider">
+    <b class="settings-title">LANGUAGE · JĘZYK</b>
+    <label class="settings-field settings-input"><span class="settings-field-label">Przewodnik i monity</span><select id="settings-language">${GUIDE_LANGS.map(c=>`<option value="${c}" ${c===guideLanguage()?'selected':''}>${c==='SK'?'SLO · Slovenčina':c}</option>`).join('')}</select></label>
+    <hr class="settings-divider">
+    <b class="settings-title">KOPIA USTAWIEŃ · BACKUP</b>
+    <p class="settings-muted">Eksport/import: klucze, kanały, API, Mapper API. Plik zawiera tajne klucze kanałów prywatnych — trzymaj go bezpiecznie.</p>
+    <div class="settings-export-actions"><button type="button" class="settings-button" id="backup-export">Eksportuj</button><button type="button" class="settings-button outlined" id="backup-import">Wczytaj z pliku</button></div>
     <hr class="settings-divider">
     <a class="settings-kofi" href="https://ko-fi.com/beepoo304" target="_blank" rel="noopener noreferrer"><b>Support M2 on Ko-fi</b><span>ko-fi.com/beepoo304</span></a>
     <hr class="settings-divider flush">
@@ -1087,6 +1186,9 @@ function renderSettings() {
   document.getElementById('mapper-api-default')?.addEventListener('click',()=>{settingsUi.mapperApi=M2Mapper.DEFAULT_API;rerender();});
   document.getElementById('mapper-api-save')?.addEventListener('click',()=>{const value=(settingsUi.mapperApi??M2Mapper.api()).trim();if(!/^https:\/\/[^\s/?#]+\.[^\s?#]+$/i.test(value)){showSettingsToast('Enter a valid https:// address');return;}M2Mapper.setApi(value);settingsUi.mapperApi=null;rerender();showSettingsToast('Mapper API saved');});
   document.getElementById('export-save')?.addEventListener('click',async()=>{await M2Export.save(settingsUi.exportDir);showSettingsToast('Export location saved');});
+  document.getElementById('settings-language')?.addEventListener('change',event=>{ try{localStorage.setItem(GUIDE_LANG_STORAGE,event.target.value);}catch{} showSettingsToast('Język zapisany · language saved'); });
+  document.getElementById('backup-export')?.addEventListener('click',exportBackup);
+  document.getElementById('backup-import')?.addEventListener('click',()=>importBackupFile(()=>renderSettings()));
   document.getElementById('close-application')?.addEventListener('click',event=>{event.currentTarget.disabled=true;event.currentTarget.textContent='Closing…';closeApplication();});
 }
 // M² resolveNames(retries = 5): look the key up in the node directory, retrying
@@ -1339,6 +1441,8 @@ tabButtons.forEach(button => button.addEventListener('click', () => {
   renderScreen(name);
 }));
 loadPackets().then(() => syncChannelSecrets());
+// Monit „Wczytać ustawienia z pliku?” — po intro, tylko gdy przeglądarka pusta (klucze/kanały).
+window.setTimeout(maybeShowImportPrompt, (window.M2PlayIntro && document.getElementById('intro')) ? 5200 : 600);
 setInterval(() => {
   if(appClosed) return;
   if(Date.now() >= nextRefreshAt && !liveState.loading) loadPackets(false);

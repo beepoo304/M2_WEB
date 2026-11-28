@@ -5,7 +5,7 @@ const GUIDE_COLORS = { green: '#42d47b', orange: '#f0a84b', blue: '#2196f3', pur
 
 function guideLanguage() {
   try { const saved = localStorage.getItem(GUIDE_LANG_STORAGE); if (GUIDE_LANGS.includes(saved)) return saved; } catch {}
-  return 'PL';
+  return 'EN';
 }
 
 function guideRow(label, description, color) {

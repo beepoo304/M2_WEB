@@ -144,10 +144,10 @@ details.clear .pop label { display:block; color:var(--muted); font-size:12px; ma
 details.clear .pop input { display:block; width:100%; margin-top:4px; padding:8px 10px; border-radius:8px; border:1px solid var(--outline); background:var(--bg); color:var(--text); }
 button.danger { width:100%; background:var(--red); color:#2a0606; border-color:var(--red); }
 button,.btn { border:1px solid var(--outline); background:var(--variant); color:var(--primary); border-radius:9px; padding:7px 12px; font:600 13px inherit; cursor:pointer; text-decoration:none; }
-.tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(160px,1fr)); gap:10px; margin-bottom:18px; }
-.tile { background:var(--surface); border:1px solid var(--outline); border-radius:12px; padding:12px 14px; }
-.tile small { display:block; color:var(--muted); font-size:12px; }
-.tile b { display:block; font-size:24px; margin-top:4px; }
+.tiles { display:grid; grid-template-columns:repeat(auto-fill,minmax(118px,1fr)); gap:8px; margin-bottom:14px; }
+.tile { background:var(--surface); border:1px solid var(--outline); border-radius:10px; padding:8px 10px; }
+.tile small { display:block; color:var(--muted); font-size:11px; }
+.tile b { display:block; font-size:18px; margin-top:2px; }
 .tile.bad b { color:var(--red); }
 .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(340px,1fr)); gap:14px; }
 section.card { background:var(--surface); border:1px solid var(--outline); border-radius:12px; padding:12px 14px; margin-bottom:14px; overflow:visible; }
@@ -311,20 +311,25 @@ function flag(string $country): string {
     if (!preg_match('/^[A-Z]{2}$/', $country)) return '';
     return '&#' . (0x1F1E6 + ord($country[0]) - 65) . ';&#' . (0x1F1E6 + ord($country[1]) - 65) . '; ';
 }
+// Trzy cienkie linie dzień po dniu: wejścia (zielona), unikalni (niebieska), błędy (czerwona).
 function chart(array $daily): string {
-    $w = 900; $hgt = 96; $pad = 22; $count = count($daily);
-    $max = max(1, ...array_map(static fn($d) => max($d['visits'], $d['unique'], $d['errors']), array_values($daily)));
-    $slot = ($w - $pad) / $count; $bar = max(2, $slot * .38);
-    $svg = '<svg viewBox="0 0 ' . $w . ' ' . $hgt . '" preserveAspectRatio="none" role="img" aria-label="Wejścia dzień po dniu">';
-    $svg .= '<text x="0" y="12" fill="#a3aba7" font-size="11">' . n($max) . '</text>';
+    $w = 900; $hgt = 96; $padX = 8; $top = 14; $bot = 16; $count = count($daily);
+    $values = array_values($daily);
+    $max = max(1, ...array_map(static fn($d) => max($d['visits'], $d['unique'], $d['errors']), $values));
+    $span = max(1, $count - 1); $plotH = $hgt - $top - $bot;
+    $xAt = static fn(int $i): float => $padX + ($w - 2 * $padX) * $i / $span;
+    $yAt = static fn(int $v): float => $top + $plotH * (1 - $v / $max);
+    $svg = '<svg viewBox="0 0 ' . $w . ' ' . $hgt . '" preserveAspectRatio="none" role="img" aria-label="Ruch dzień po dniu">';
+    $svg .= '<text x="2" y="11" fill="#a3aba7" font-size="11">' . n($max) . '</text>';
+    foreach ([['visits', '#42d47b'], ['unique', '#2196f3'], ['errors', '#ff6565']] as [$k, $color]) {
+        $points = [];
+        foreach ($values as $i => $d) $points[] = round($xAt($i), 1) . ',' . round($yAt((int) $d[$k]), 1);
+        $svg .= '<polyline points="' . implode(' ', $points) . '" fill="none" stroke="' . $color . '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"/>';
+    }
+    $every = $count <= 31 ? max(1, (int) ceil($count / 7)) : 7;
     $i = 0;
     foreach ($daily as $day => $d) {
-        $x = $pad + $i * $slot;
-        foreach ([['visits', '#42d47b', 0], ['unique', '#2196f3', $bar], ['errors', '#ff6565', $bar * 2]] as [$k, $color, $offset]) {
-            $height = ($hgt - 34) * $d[$k] / $max;
-            if ($d[$k] > 0) $svg .= '<rect x="' . round($x + $offset * .7, 1) . '" y="' . round($hgt - 18 - $height, 1) . '" width="' . round($bar * .7, 1) . '" height="' . round($height, 1) . '" fill="' . $color . '"><title>' . h($day . ' · ' . $k . ': ' . $d[$k]) . '</title></rect>';
-        }
-        if ($count <= 31 || $i % 7 === 0) $svg .= '<text x="' . round($x, 1) . '" y="' . ($hgt - 4) . '" fill="#a3aba7" font-size="10">' . h(substr($day, 5)) . '</text>';
+        if ($i % $every === 0) $svg .= '<text x="' . round($xAt($i), 1) . '" y="' . ($hgt - 3) . '" fill="#a3aba7" font-size="10">' . h(substr($day, 5)) . '</text>';
         $i++;
     }
     return $svg . '</svg>';

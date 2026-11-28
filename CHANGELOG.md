@@ -1,5 +1,11 @@
 # ChangeLog
 
+## [0.5.6] - 2026-11-28
+### Changed
+- Panel /admin: wykres zmieniony na trzy cienkie linie (wejścia, unikalni, błędy) zamiast słupków.
+- Panel /admin: mniejsze kafle podsumowania (bardziej zwarty układ).
+
+
 ## [0.5.5] - 2026-11-28
 ### Changed
 - Panel /admin: wykres „Wejścia dzień po dniu” zmniejszony (mniej dominujący).

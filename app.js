@@ -1,5 +1,5 @@
 // Wydanie z GitHuba (tag M2_WEB) — aktualizować razem z package.json przy każdym release.
-const M2_WEB_RELEASE = { version: '0.5.7', date: '28.11.2026' };
+const M2_WEB_RELEASE = { version: '0.5.8', date: '28.11.2026' };
 const tabButtons = [...document.querySelectorAll('.nav-item')];
 const screen = document.getElementById('screen');
 const liveState = { packets: [], loading: false, error: '', lastSuccess: 0, selected: null, details: null, detailsLoading: false, detailsError: '', selectedChannel: '', showAllRoutes: false };
@@ -217,7 +217,7 @@ function relationLabels(matches) {
 function loadTrackedKeys() {
   try {
     // Jak M² (DataStore): zapisane klucze przetrwają zamknięcie karty; stary zapis sesyjny przenosimy.
-    const parsed=JSON.parse(localStorage.getItem(KEY_STORAGE)||sessionStorage.getItem(KEY_STORAGE)||'[]');
+    const parsed=JSON.parse(sessionStorage.getItem(KEY_STORAGE)||localStorage.getItem(KEY_STORAGE)||'[]');
     const now=Date.now();
     return Array.isArray(parsed) ? parsed.filter(item=>item&&/^[a-f\d]{64}$/i.test(item.key||'')).map(item=>({
       key:item.key.toUpperCase(),
@@ -229,7 +229,7 @@ function loadTrackedKeys() {
   }
   catch { return []; }
 }
-function saveTrackedKeys() { try { localStorage.setItem(KEY_STORAGE,JSON.stringify(trackedKeys)); } catch {} window.M2Stats?.keysChanged(trackedKeys); }
+function saveTrackedKeys() { try { sessionStorage.setItem(KEY_STORAGE,JSON.stringify(trackedKeys)); localStorage.removeItem(KEY_STORAGE); } catch {} window.M2Stats?.keysChanged(trackedKeys); }
 // M² OwnTrafficLogStore: the 250-entry log survives restarts and Clear only
 // moves the cut-off (clearedAt), so older packets never come back.
 const MY_LOG_CLEARED_STORAGE = 'm2-web-own-traffic-cleared-v1';
@@ -257,7 +257,7 @@ function migrateChannel(value) {
 }
 function loadChannels() {
   try {
-    const value=JSON.parse(localStorage.getItem(CHANNEL_STORAGE)||'null');
+    const value=JSON.parse(sessionStorage.getItem(CHANNEL_STORAGE)||localStorage.getItem(CHANNEL_STORAGE)||'null');
     if(Array.isArray(value)) return value.filter(item=>typeof item?.name==='string').slice(0,50).map(migrateChannel);
   } catch {}
   try {
@@ -266,7 +266,7 @@ function loadChannels() {
   } catch {}
   return [];
 }
-function saveChannels() { try { localStorage.setItem(CHANNEL_STORAGE,JSON.stringify(savedChannels.slice(0,50))); } catch {} window.M2Stats?.channelsChanged(savedChannels); }
+function saveChannels() { try { sessionStorage.setItem(CHANNEL_STORAGE,JSON.stringify(savedChannels.slice(0,50))); localStorage.removeItem(CHANNEL_STORAGE); } catch {} window.M2Stats?.channelsChanged(savedChannels); }
 
 /** Deszyfracja wiadomości prywatnych kanałów z bieżącego strumienia pakietów (payload_type 5). */
 async function syncChannelSecrets() {
@@ -461,7 +461,7 @@ function normalizeApiSource(value) {
 }
 function loadApiSources() {
   try {
-    const saved=JSON.parse(localStorage.getItem(API_STORAGE)||sessionStorage.getItem(API_STORAGE)||'null');
+    const saved=JSON.parse(sessionStorage.getItem(API_STORAGE)||localStorage.getItem(API_STORAGE)||'null');
     if(Array.isArray(saved)){
       const clean=saved.map(normalizeApiSource).filter(Boolean);
       if(clean.length){
@@ -472,9 +472,9 @@ function loadApiSources() {
   } catch {}
   return ['https://mc.inside.net.pl', 'https://live.meshcorekk.xyz', 'https://analyzer.marwoj.net'];
 }
-function saveApiSources() { try { localStorage.setItem(API_STORAGE,JSON.stringify(apiSources)); localStorage.setItem(ACTIVE_API_STORAGE,activeApiSource||apiSources[0]); } catch {} }
+function saveApiSources() { try { sessionStorage.setItem(API_STORAGE,JSON.stringify(apiSources)); sessionStorage.setItem(ACTIVE_API_STORAGE,activeApiSource||apiSources[0]); localStorage.removeItem(API_STORAGE); localStorage.removeItem(ACTIVE_API_STORAGE); } catch {} }
 function loadActiveApiSource() {
-  const saved=normalizeApiSource(localStorage.getItem(ACTIVE_API_STORAGE)||sessionStorage.getItem(ACTIVE_API_STORAGE)||'');
+  const saved=normalizeApiSource(sessionStorage.getItem(ACTIVE_API_STORAGE)||localStorage.getItem(ACTIVE_API_STORAGE)||'');
   if(saved&&!apiSources.includes(saved))apiSources.push(saved);
   return saved||apiSources[0];
 }
@@ -1087,7 +1087,7 @@ function renderImportPrompt() {
   document.getElementById('import-prompt-yes').addEventListener('click',()=>{ close(); importBackupFile(()=>renderScreen(currentScreen())); });
 }
 function maybeShowImportPrompt() {
-  if(trackedKeys.length||savedChannels.length) return;              // tylko gdy przeglądarka pusta
+  // Zawsze po intro, raz na sesję (tak jak samo intro).
   try { if(sessionStorage.getItem('m2-web-import-prompt-shown'))return; sessionStorage.setItem('m2-web-import-prompt-shown','1'); } catch {}
   renderImportPrompt();
 }

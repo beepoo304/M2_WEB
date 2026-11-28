@@ -1,5 +1,11 @@
 # ChangeLog
 
+## [0.5.8] - 2026-11-28
+### Changed
+- Dane (klucze, kanały, API) przechowywane w sessionStorage: przeżywają odświeżenie strony, ale kasują się po zamknięciu okna/karty.
+- Monit „Wczytać ustawienia z pliku?” pokazuje się zawsze po intro (raz na sesję), nie tylko gdy pusto.
+
+
 ## [0.5.7] - 2026-11-28
 ### Added
 - Kopia ustawień: eksport i import (klucze, kanały, API, Mapper API) w zakładce Settings; plik M2_DATA_<data-godzina>.json.

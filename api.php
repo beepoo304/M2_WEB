@@ -51,6 +51,7 @@ function fetchJsonResource(string $url): array {
         CURLOPT_RETURNTRANSFER => true,
         CURLOPT_FOLLOWLOCATION => false,
         CURLOPT_CONNECTTIMEOUT => 5,
+        CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,   // jak mapper.php: bez prób przez IPv6 (timeout 5000 ms)
         CURLOPT_TIMEOUT => 12,
         CURLOPT_HTTPHEADER => ['Accept: application/json', 'Cache-Control: no-cache'],
     ]);
@@ -145,6 +146,7 @@ curl_setopt_array($curl, [
     CURLOPT_RETURNTRANSFER => true,
     CURLOPT_FOLLOWLOCATION => false,
     CURLOPT_CONNECTTIMEOUT => 5,
+    CURLOPT_IPRESOLVE => CURL_IPRESOLVE_V4,   // jak mapper.php: bez prób przez IPv6 (timeout 5000 ms)
     CURLOPT_TIMEOUT => 12,
     CURLOPT_HTTPHEADER => ['Accept: application/json', 'Cache-Control: no-cache'],
 ]);

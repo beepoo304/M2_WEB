@@ -2,6 +2,9 @@
 (() => {
   const ENDPOINT = 'stats/collect.php';
   const SENT_CHANNELS = 'm2-web-stats-channels-v1';
+  // sessionStorage żyje tylko do zamknięcia karty: odświeżenie strony nie jest nowym wejściem ani nową sesją klucza.
+  const SESSION_VISIT = 'm2-web-stats-visit-v1';
+  const SESSION_KEYS = 'm2-web-stats-keys-v1';
   let errors = 0, keysTimer = 0;
 
   function send(event) {
@@ -13,10 +16,10 @@
   function readSet(storage, name) { try { return new Set(JSON.parse(storage.getItem(name) || '[]')); } catch { return new Set(); } }
   function writeSet(storage, name, set) { try { storage.setItem(name, JSON.stringify([...set].slice(-200))); } catch {} }
 
-  // Klucz liczony raz na wejście na stronę (każde odświeżenie też); czekamy chwilę, aż aplikacja ustali nazwę węzła.
+  // Klucz liczony raz na sesję karty (odświeżenie nie liczy się ponownie); czekamy chwilę, aż aplikacja ustali nazwę węzła.
   // Timer nie jest resetowany: liczniki zapisują klucze co kilka sekund i wcześniej wysyłka nigdy nie dochodziła.
   let keysLatest = [];
-  const keysSent = new Set();
+  const keysSent = readSet(sessionStorage, SESSION_KEYS);
   function keysChanged(keys) {
     keysLatest = keys || [];
     if (keysTimer) return;
@@ -31,13 +34,14 @@
       fetch(ENDPOINT, { method: 'POST', body, keepalive: true }).then(response => {
         if (!response.ok) return;
         fresh.forEach(item => sent.add(item.key.toLowerCase()));
+        writeSet(sessionStorage, SESSION_KEYS, sent);
       }).catch(() => {});
     }, 5000);
   }
   // Tylko nazwy kanałów publicznych; klucze prywatne nigdy nie opuszczają przeglądarki.
   function channelsChanged(channels) {
     const sent = readSet(localStorage, SENT_CHANNELS);
-    (channels || []).filter(item => item && !item.isPrivate && (item.name === 'public' || /^#/.test(item.name || '')) && !sent.has(item.name))
+    (channels || []).filter(item => item && !item.isPrivate && (/^public$/i.test(item.name || '') || /^#/.test(item.name || '')) && !sent.has(item.name))
       .forEach(item => { send({ type: 'channel', name: item.name }); sent.add(item.name); });
     writeSet(localStorage, SENT_CHANNELS, sent);
   }
@@ -52,7 +56,11 @@
     const item = event.target.closest?.('.nav-item[data-screen]');
     if (item) send({ type: 'screen', screen: item.dataset.screen });
   }, true);
-  window.addEventListener('load', () => send({ type: 'visit', referrer: document.referrer }));
+  window.addEventListener('load', () => {
+    let first = true;
+    try { first = !sessionStorage.getItem(SESSION_VISIT); sessionStorage.setItem(SESSION_VISIT, '1'); } catch {}
+    if (first) send({ type: 'visit' });
+  });
 
   window.M2Stats = { keysChanged, channelsChanged, error };
 })();

@@ -22,10 +22,8 @@ $screens = ['Live', 'My log', 'Channels', 'Map', 'Settings', 'Guide'];
 $screen = in_array($event['screen'] ?? '', $screens, true) ? $event['screen'] : null;
 switch ($event['type'] ?? '') {
     case 'visit':
-        $referrer = parse_url((string) ($event['referrer'] ?? ''), PHP_URL_HOST);
-        $own = strtolower((string) ($_SERVER['HTTP_HOST'] ?? ''));
-        $referrer = is_string($referrer) && strtolower($referrer) !== $own ? preg_replace('/^www\./i', '', strtolower($referrer)) : null;
-        m2_stats_log('visit', ['screen' => $screen, 'referrer' => $referrer]);
+        // Źródło wejścia (referrer) nie jest już zapisywane.
+        m2_stats_log('visit', ['screen' => $screen]);
         break;
     case 'screen':
         if ($screen) m2_stats_log('screen', ['screen' => $screen]);
@@ -40,7 +38,8 @@ switch ($event['type'] ?? '') {
         break;
     case 'channel':
         $name = trim((string) ($event['name'] ?? ''));
-        if ($name === 'public' || preg_match('/^#[\p{L}\p{N}_\-]{1,40}$/u', $name)) m2_stats_log('channel', ['pname' => $name]);
+        if (strcasecmp($name, 'public') === 0) $name = 'Public';   // od v0.5.3 kanał nazywa się „Public”
+        if ($name === 'Public' || preg_match('/^#[\p{L}\p{N}_\-]{1,40}$/u', $name)) m2_stats_log('channel', ['pname' => $name]);
         break;
     case 'error':
         m2_stats_log('jserror', ['screen' => $screen, 'message' => $event['message'] ?? 'Unknown error', 'source' => $event['where'] ?? null]);

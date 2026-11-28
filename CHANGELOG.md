@@ -1,5 +1,22 @@
 # ChangeLog
 
+## [0.5.4] - 2026-11-28
+### Fixed
+- Statystyki: wejście i klucz liczone raz na sesję karty (sessionStorage), odświeżenie strony nie jest nowym wejściem.
+- Statystyki: dzienny identyfikator odwiedzającego zmienia się o północy czasu polskiego (wcześniej UTC).
+- Statystyki: kanał Public znowu liczony (porównanie bez względu na wielkość liter).
+- Statystyki: boty pomijane w wejściach, odwiedzających, wykresie, krajach i miastach.
+- Panel: wykres dzienny skalowany do wszystkich serii (słupki nie wychodzą poza ramkę).
+- Panel: kolumna „Zapytania API” przy kluczach liczona z wagą próbkowania, jak reszta sekcji API.
+- API: połączenia do źródeł tylko przez IPv4 (jak mapper.php) — mniej błędów „timed out after 5000 ms”.
+
+### Changed
+- Panel: kafelki „Odwiedzający dziennie (średnio)” i „Odwiedzający (suma dzienna)” zamiast mylącego „Unikalni odwiedzający”; „Osoby” → „Osobo-dni”; „Baza kluczy → Zapytania” → „Sesje ze śledzeniem”.
+- Panel: „Najczęstsze błędy” ze źródłem, liczbą minut oraz czasem pierwszego i ostatniego wystąpienia.
+- Panel: usunięte sekcje Zakładki, Skąd przyszli, Urządzenia, Przeglądarki, Zapytania API wg rodzaju.
+- Statystyki: źródło wejścia (referrer) nie jest już zapisywane.
+
+
 ## [0.5.2] - 2026-11-16
 ### Fixed
 - Mapa: pakiety nowe dla sesji mapy zawsze pobierają szczegóły obserwacji (jak collectPacket w M² Android) — koniec gubienia tras pakietów z 1 obserwacją bez dopasowań na poziomie pakietu.

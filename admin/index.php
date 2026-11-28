@@ -15,9 +15,8 @@ const M2_ADMIN_MAX_FAILS = 5;
 const M2_ADMIN_LOCK = 900;
 const M2_ADMIN_SECTIONS = [
     'tiles' => 'Podsumowanie', 'chart' => 'Wejścia dzień po dniu', 'keys' => 'Najczęściej sprawdzane klucze', 'keydb' => 'Baza kluczy',
-    'countries' => 'Kraje', 'cities' => 'Miasta', 'screens' => 'Zakładki', 'referrers' => 'Skąd przyszli',
-    'devices' => 'Urządzenia', 'browsers' => 'Przeglądarki', 'channels' => 'Dodawane kanały publiczne',
-    'resources' => 'Zapytania API wg rodzaju', 'sources' => 'Źródła danych API', 'toperrors' => 'Najczęstsze błędy',
+    'countries' => 'Kraje', 'cities' => 'Miasta', 'channels' => 'Dodawane kanały publiczne',
+    'sources' => 'Źródła danych API', 'toperrors' => 'Najczęstsze błędy',
     'errors' => 'Ostatnie błędy',
 ];
 
@@ -223,9 +222,12 @@ function q(string $sql, array $params = []): array {
 function one(string $sql, array $params = []) { $rows = q($sql, $params); return $rows ? array_values($rows[0])[0] : 0; }
 
 $s = [$since];
+// Boty (rozpoznane po User-Agent) nie wchodzą do liczby wejść, odwiedzających, wykresu ani krajów/miast.
+$human = "COALESCE(device,'') <> 'Bot'";
+// vid jest dzienny, więc COUNT(DISTINCT vid) w okresie dłuższym niż dzień to „osobo-dni”, nie liczba osób.
 $topKeys = q("SELECT e.pkey, COUNT(DISTINCT e.vid) AS users, COUNT(*) AS sessions, MAX(e.ts) AS last,
     (SELECT x.pname FROM m2_events x WHERE x.kind = 'key' AND x.pkey = e.pkey AND x.pname IS NOT NULL AND x.pname <> '' ORDER BY x.ts DESC LIMIT 1) AS name,
-    (SELECT COUNT(*) FROM m2_events y WHERE y.kind = 'api' AND y.pkey = e.pkey AND y.ts >= ?) AS lookups
+    (SELECT COALESCE(SUM(y.weight),0) FROM m2_events y WHERE y.kind = 'api' AND y.pkey = e.pkey AND y.ts >= ?) AS lookups
     FROM m2_events e WHERE e.kind = 'key' AND e.ts >= ? GROUP BY e.pkey ORDER BY users DESC, sessions DESC LIMIT 50", [since_for('keys'), since_for('keys')]);
 $keyDb = q('SELECT pkey, name, hits, first_seen, last_seen FROM m2_keys ORDER BY hits DESC, last_seen DESC LIMIT ' . M2_KEYS_MAX);
 $errorWhere = $errFilter === 'api' ? "kind = 'api' AND status >= 400" : ($errFilter === 'js' ? "kind = 'jserror'" : "((kind = 'api' AND status >= 400) OR kind = 'jserror')");
@@ -238,10 +240,10 @@ if (isset($_GET['export'])) {
     $out = fopen('php://output', 'w');
     fwrite($out, "\xEF\xBB\xBF");
     if ($type === 'keys') {
-        fputcsv($out, ['klucz', 'nazwa', 'osoby', 'sesje', 'zapytania_api', 'ostatnio'], ';');
+        fputcsv($out, ['klucz', 'nazwa', 'osobo_dni', 'sesje', 'zapytania_api', 'ostatnio'], ';');
         foreach ($topKeys as $r) fputcsv($out, [$r['pkey'], $r['name'], $r['users'], $r['sessions'], $r['lookups'], date('Y-m-d H:i', (int) $r['last'])], ';');
     } elseif ($type === 'keydb') {
-        fputcsv($out, ['klucz', 'nazwa', 'zapytania', 'pierwszy_raz', 'ostatnio'], ';');
+        fputcsv($out, ['klucz', 'nazwa', 'sesje_ze_sledzeniem', 'pierwszy_raz', 'ostatnio'], ';');
         foreach ($keyDb as $r) fputcsv($out, [$r['pkey'], $r['name'], $r['hits'], date('Y-m-d H:i', (int) $r['first_seen']), date('Y-m-d H:i', (int) $r['last_seen'])], ';');
     } elseif ($type === 'errors') {
         fputcsv($out, ['czas', 'rodzaj', 'zakladka', 'zasob', 'status', 'komunikat', 'zrodlo', 'kraj', 'miasto', 'przegladarka'], ';');
@@ -255,9 +257,17 @@ if (isset($_GET['export'])) {
     exit;
 }
 
-$tiles = [
-    'Wejścia' => one("SELECT COUNT(*) FROM m2_events WHERE kind = 'visit' AND ts >= ?", sv('tiles')),
-    'Unikalni odwiedzający' => one("SELECT COUNT(DISTINCT vid) FROM m2_events WHERE kind IN ('visit','screen') AND ts >= ?", sv('tiles')),
+$personDays = (int) one("SELECT COUNT(DISTINCT vid) FROM m2_events WHERE kind IN ('visit','screen') AND $human AND ts >= ?", sv('tiles'));
+$firstTs = (int) one("SELECT MIN(ts) FROM m2_events WHERE kind IN ('visit','screen') AND $human AND ts >= ?", sv('tiles'));
+$visitorDays = $firstTs ? max(1, (int) round((strtotime('today') - strtotime(date('Y-m-d', $firstTs))) / 86400) + 1) : 1;
+$tiles = ['Wejścia (sesje)' => one("SELECT COUNT(*) FROM m2_events WHERE kind = 'visit' AND $human AND ts >= ?", sv('tiles'))];
+if ($period === '1') {
+    $tiles['Odwiedzający dziś'] = $personDays;
+} else {
+    $tiles['Odwiedzający dziennie (średnio)'] = number_format($personDays / $visitorDays, 1, ',', ' ');
+    $tiles['Odwiedzający (suma dzienna)'] = $personDays;
+}
+$tiles += [
     'Otwarcia zakładek' => one("SELECT COUNT(*) FROM m2_events WHERE kind = 'screen' AND ts >= ?", sv('tiles')),
     'Śledzone klucze' => one("SELECT COUNT(DISTINCT pkey) FROM m2_events WHERE kind = 'key' AND ts >= ?", sv('tiles')),
     'Zapytania API' => one("SELECT COALESCE(SUM(weight),0) FROM m2_events WHERE kind = 'api' AND ts >= ?", sv('tiles')),
@@ -269,24 +279,21 @@ $jsErrors = (int) one("SELECT COUNT(*) FROM m2_events WHERE kind = 'jserror' AND
 $chartDays = $period === '0' ? M2_STATS_RETENTION_DAYS : max(7, (int) $period);
 $daily = [];
 for ($i = $chartDays - 1; $i >= 0; $i--) $daily[date('Y-m-d', strtotime("today -$i days"))] = ['visits' => 0, 'unique' => 0, 'errors' => 0];
-foreach (q("SELECT day, SUM(CASE WHEN kind = 'visit' THEN 1 ELSE 0 END) AS visits, COUNT(DISTINCT CASE WHEN kind IN ('visit','screen') THEN vid END) AS uniq,
+foreach (q("SELECT day, SUM(CASE WHEN kind = 'visit' AND $human THEN 1 ELSE 0 END) AS visits, COUNT(DISTINCT CASE WHEN kind IN ('visit','screen') AND $human THEN vid END) AS uniq,
     SUM(CASE WHEN kind = 'jserror' OR (kind = 'api' AND status >= 400) THEN 1 ELSE 0 END) AS errors
     FROM m2_events WHERE ts >= ? GROUP BY day", [max(strtotime('today -' . ($chartDays - 1) . ' days'), (int) ($cuts['chart'] ?? 0))]) as $r) {
     if (isset($daily[$r['day']])) $daily[$r['day']] = ['visits' => (int) $r['visits'], 'unique' => (int) $r['uniq'], 'errors' => (int) $r['errors']];
 }
 
-$countries = q("SELECT COALESCE(country,'?') AS label, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND ts >= ? GROUP BY country ORDER BY c DESC LIMIT 20", sv('countries'));
-$cities = q("SELECT city AS label, MAX(country) AS country, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND city IS NOT NULL AND ts >= ? GROUP BY city ORDER BY c DESC LIMIT 25", sv('cities'));
-$screens = q("SELECT screen AS label, COUNT(*) AS c FROM m2_events WHERE kind = 'screen' AND ts >= ? GROUP BY screen ORDER BY c DESC", sv('screens'));
-$referrers = q("SELECT referrer AS label, COUNT(*) AS c FROM m2_events WHERE kind = 'visit' AND referrer IS NOT NULL AND ts >= ? GROUP BY referrer ORDER BY c DESC LIMIT 20", sv('referrers'));
-$devices = q("SELECT device AS label, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND ts >= ? GROUP BY device ORDER BY c DESC", sv('devices'));
-$browsers = q("SELECT browser AS label, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND ts >= ? GROUP BY browser ORDER BY c DESC", sv('browsers'));
+$countries = q("SELECT COALESCE(country,'?') AS label, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND $human AND ts >= ? GROUP BY country ORDER BY c DESC LIMIT 20", sv('countries'));
+$cities = q("SELECT city AS label, MAX(country) AS country, COUNT(DISTINCT vid) AS c FROM m2_events WHERE kind = 'visit' AND $human AND city IS NOT NULL AND ts >= ? GROUP BY city ORDER BY c DESC LIMIT 25", sv('cities'));
 $channels = q("SELECT pname AS label, COUNT(*) AS c FROM m2_events WHERE kind = 'channel' AND ts >= ? GROUP BY pname ORDER BY c DESC LIMIT 25", sv('channels'));
 $sources = q("SELECT COALESCE(source,'?') AS source, SUM(weight) AS total, SUM(CASE WHEN status >= 400 THEN weight ELSE 0 END) AS bad,
     SUM(CASE WHEN status < 400 THEN ms*weight ELSE 0 END)*1.0/NULLIF(SUM(CASE WHEN status < 400 THEN weight ELSE 0 END),0) AS avgms,
     MAX(CASE WHEN status < 400 THEN ms END) AS maxms FROM m2_events WHERE kind = 'api' AND ts >= ? GROUP BY source ORDER BY total DESC", sv('sources'));
-$resources = q("SELECT resource AS label, SUM(weight) AS c FROM m2_events WHERE kind = 'api' AND ts >= ? GROUP BY resource ORDER BY c DESC", sv('resources'));
-$topErrors = q("SELECT message AS label, COUNT(*) AS c FROM m2_events WHERE $errorWhere AND ts >= ? GROUP BY message ORDER BY c DESC LIMIT 10", sv('toperrors'));
+// „Minuty” = w ilu różnych minutach błąd wystąpił: setki wpisów w kilku minutach to jedna awaria, a nie setki problemów.
+$topErrors = q("SELECT message AS label, COALESCE(source,'?') AS source, COUNT(*) AS c, COUNT(DISTINCT ts - ts % 60) AS minutes, MIN(ts) AS first, MAX(ts) AS last
+    FROM m2_events WHERE $errorWhere AND ts >= ? GROUP BY message, source ORDER BY c DESC LIMIT 10", sv('toperrors'));
 
 function ranking(array $rows, string $empty = 'Brak danych', ?callable $label = null): string {
     if (!$rows) return '<div class="empty">' . h($empty) . '</div>';
@@ -304,7 +311,7 @@ function flag(string $country): string {
 }
 function chart(array $daily): string {
     $w = 900; $hgt = 180; $pad = 22; $count = count($daily);
-    $max = max(1, ...array_map(static fn($d) => $d['visits'], array_values($daily)));
+    $max = max(1, ...array_map(static fn($d) => max($d['visits'], $d['unique'], $d['errors']), array_values($daily)));
     $slot = ($w - $pad) / $count; $bar = max(2, $slot * .38);
     $svg = '<svg viewBox="0 0 ' . $w . ' ' . $hgt . '" preserveAspectRatio="none" role="img" aria-label="Wejścia dzień po dniu">';
     $svg .= '<text x="0" y="12" fill="#a3aba7" font-size="11">' . n($max) . '</text>';
@@ -359,25 +366,20 @@ page_start('M² · statystyki'); ?>
 
   <section class="card"><?= title('Najczęściej sprawdzane klucze', 'keys', '<a class="btn" href="?p=' . h($period) . '&amp;export=keys">CSV</a>') ?>
     <?php if (!$topKeys): ?><div class="empty">Brak danych</div><?php else: ?>
-    <table><tr><th>#</th><th>Nazwa</th><th>Klucz</th><th class="num">Osoby</th><th class="num">Sesje</th><th class="num">Zapytania API</th><th class="num">Ostatnio</th></tr>
+    <table><tr><th>#</th><th>Nazwa</th><th>Klucz</th><th class="num" title="Osoba liczona raz na każdy dzień, w którym śledziła klucz">Osobo-dni</th><th class="num" title="Sesje karty z tym kluczem; odświeżenie strony nie liczy się ponownie">Sesje</th><th class="num">Zapytania API</th><th class="num">Ostatnio</th></tr>
     <?php foreach ($topKeys as $i => $r): ?><tr><td><?= $i + 1 ?></td><td><?= h($r['name'] ?: '—') ?></td><td class="key" title="<?= h($r['pkey']) ?>"><?= h(strtoupper(substr($r['pkey'], 0, 4)) . ' · ' . substr($r['pkey'], 0, 12) . '…') ?></td><td class="num"><?= n($r['users']) ?></td><td class="num"><?= n($r['sessions']) ?></td><td class="num"><?= n($r['lookups']) ?></td><td class="num"><?= h(date('d.m H:i', (int) $r['last'])) ?></td></tr><?php endforeach; ?>
     </table><?php endif; ?></section>
 
   <section class="card"><?= title('Baza kluczy (' . count($keyDb) . ' / ' . M2_KEYS_MAX . ')', 'keydb', '<a class="btn" href="?p=' . h($period) . '&amp;export=keydb">CSV</a>') ?>
     <?php if (!$keyDb): ?><div class="empty">Brak danych</div><?php else: ?>
-    <table><tr><th>#</th><th>Nazwa</th><th>Klucz</th><th class="num">Zapytania</th><th class="num">Pierwszy raz</th><th class="num">Ostatnio</th></tr>
+    <table><tr><th>#</th><th>Nazwa</th><th>Klucz</th><th class="num" title="Ile sesji kart śledziło ten klucz (nie liczba zapytań do API)">Sesje ze śledzeniem</th><th class="num">Pierwszy raz</th><th class="num">Ostatnio</th></tr>
     <?php foreach ($keyDb as $i => $r): ?><tr><td><?= $i + 1 ?></td><td><?= h($r['name'] ?: '—') ?></td><td class="key" title="<?= h($r['pkey']) ?>"><?= h(strtoupper(substr($r['pkey'], 0, 4)) . ' · ' . substr($r['pkey'], 0, 12) . '…') ?></td><td class="num"><?= n($r['hits']) ?></td><td class="num"><?= h(date('d.m.y H:i', (int) $r['first_seen'])) ?></td><td class="num"><?= h(date('d.m H:i', (int) $r['last_seen'])) ?></td></tr><?php endforeach; ?>
     </table><?php endif; ?></section>
 
   <div class="grid">
     <section class="card"><?= title('Kraje', 'countries') ?><?= ranking($countries, 'Brak danych', static fn($r) => flag((string) $r['label']) . h($r['label'])) ?></section>
     <section class="card"><?= title('Miasta', 'cities') ?><?= ranking($cities, 'Brak danych', static fn($r) => flag((string) $r['country']) . h($r['label'])) ?></section>
-    <section class="card"><?= title('Zakładki', 'screens') ?><?= ranking($screens) ?></section>
-    <section class="card"><?= title('Skąd przyszli', 'referrers') ?><?= ranking($referrers, 'Brak — wejścia bezpośrednie') ?></section>
-    <section class="card"><?= title('Urządzenia', 'devices') ?><?= ranking($devices) ?></section>
-    <section class="card"><?= title('Przeglądarki', 'browsers') ?><?= ranking($browsers) ?></section>
     <section class="card"><?= title('Dodawane kanały publiczne', 'channels') ?><?= ranking($channels) ?></section>
-    <section class="card"><?= title('Zapytania API wg rodzaju', 'resources') ?><?= ranking($resources) ?></section>
   </div>
 
   <section class="card"><?= title('Źródła danych API', 'sources') ?>
@@ -387,7 +389,11 @@ page_start('M² · statystyki'); ?>
       <tr><td><?= h($r['source']) ?></td><td class="num"><?= n($r['total']) ?></td><td class="num"><?= n($r['bad']) ?></td><td class="num" style="color:<?= $pct > 5 ? 'var(--red)' : 'inherit' ?>"><?= number_format($pct, 1, ',', ' ') ?>%</td><td class="num"><?= n($r['avgms']) ?> ms</td><td class="num"><?= n($r['maxms']) ?> ms</td></tr>
     <?php endforeach; ?></table><?php endif; ?></section>
 
-  <section class="card"><?= title('Najczęstsze błędy', 'toperrors') ?><?= ranking($topErrors, 'Brak błędów') ?></section>
+  <section class="card"><?= title('Najczęstsze błędy', 'toperrors') ?>
+    <?php if (!$topErrors): ?><div class="empty">Brak błędów</div><?php else: ?>
+    <table><tr><th>Komunikat</th><th>Źródło</th><th class="num">Wpisy</th><th class="num" title="W ilu różnych minutach wystąpił błąd — seria wpisów w kilku minutach to jedna awaria">Minuty</th><th class="num">Pierwszy</th><th class="num">Ostatni</th></tr>
+    <?php foreach ($topErrors as $r): ?><tr><td class="msg"><?= h($r['label'] ?: '—') ?></td><td><?= h($r['source']) ?></td><td class="num"><?= n($r['c']) ?></td><td class="num"><?= n($r['minutes']) ?></td><td class="num"><?= h(date('d.m H:i', (int) $r['first'])) ?></td><td class="num"><?= h(date('d.m H:i', (int) $r['last'])) ?></td></tr><?php endforeach; ?>
+    </table><?php endif; ?></section>
 
   <section class="card"><?= title('Ostatnie błędy', 'errors', '<a class="btn" href="?p=' . h($period) . '&amp;err=' . h($errFilter) . '&amp;export=errors">CSV</a>') ?>
     <div class="filters"><?php foreach (['all' => 'Wszystkie', 'api' => 'API', 'js' => 'Przeglądarka'] as $key => $label): ?><a href="?p=<?= h($period) ?>&amp;err=<?= $key ?>" class="<?= $key === $errFilter ? 'on' : '' ?>"><?= $label ?></a><?php endforeach; ?></div>

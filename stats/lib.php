@@ -118,9 +118,9 @@ function m2_ip_hash(string $ip): string {
     return substr(hash('sha256', m2_stats_salt() . '|ip|' . $ip), 0, 16);
 }
 
-// Ten sam odwiedzający = to samo IP + przeglądarka w danym dniu. Surowe IP nie jest zapisywane.
+// Ten sam odwiedzający = to samo IP + przeglądarka w danym dniu (czas polski, zmiana o północy). Surowe IP nie jest zapisywane.
 function m2_visitor_id(): string {
-    return substr(hash('sha256', m2_stats_salt() . '|' . m2_client_ip() . '|' . ($_SERVER['HTTP_USER_AGENT'] ?? '') . '|' . gmdate('Y-m-d')), 0, 16);
+    return substr(hash('sha256', m2_stats_salt() . '|' . m2_client_ip() . '|' . ($_SERVER['HTTP_USER_AGENT'] ?? '') . '|' . date('Y-m-d')), 0, 16);
 }
 
 function m2_user_agent(): array {
